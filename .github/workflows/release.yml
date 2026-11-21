@@ -1,0 +1,87 @@
+name: Release
+
+# Push a tag like v1.0.1 to build the app + installer, publish a GitHub Release,
+# and generate (and optionally submit) the winget manifest.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 1.0.1) - creates tag v<version>'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      PACKAGE_ID: merchanthasan2.NetSpeedBoss
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        shell: pwsh
+        run: |
+          $ver = '${{ github.event.inputs.version }}'
+          if (-not $ver) { $ver = '${{ github.ref_name }}'.TrimStart('v') }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+          "tag=v$ver"    >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Build app, installer and portable zip
+        shell: pwsh
+        run: ./build.ps1 -Version ${{ steps.v.outputs.version }} -Installer
+
+      - name: Add stable-name installer (for the website's "latest" download link)
+        shell: pwsh
+        run: Copy-Item "dist/NetSpeedBoss-${{ steps.v.outputs.version }}-Setup.exe" "dist/NetSpeedBoss-Setup.exe"
+
+      - name: Generate winget manifests
+        shell: pwsh
+        run: ./winget/make-manifests.ps1 -Version ${{ steps.v.outputs.version }} -Installer "dist/NetSpeedBoss-${{ steps.v.outputs.version }}-Setup.exe" -OutDir dist/winget
+
+      - name: Zip winget manifests
+        shell: pwsh
+        run: Compress-Archive -Path dist/winget/* -DestinationPath "dist/winget-manifests-${{ steps.v.outputs.version }}.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: NetSpeed Boss ${{ steps.v.outputs.version }}
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **winget** (once the package is live in the winget catalog):
+            ```
+            winget install merchanthasan2.NetSpeedBoss
+            ```
+
+            **Or download** `NetSpeedBoss-${{ steps.v.outputs.version }}-Setup.exe` below and run it.
+            No administrator rights needed. Windows 10 / 11 (64-bit).
+
+            Prefer no installer? Grab the `portable.zip`, unzip and run `NetSpeedBoss.exe`.
+          files: |
+            dist/NetSpeedBoss-${{ steps.v.outputs.version }}-Setup.exe
+            dist/NetSpeedBoss-Setup.exe
+            dist/NetSpeedBoss-${{ steps.v.outputs.version }}-portable.zip
+            dist/winget-manifests-${{ steps.v.outputs.version }}.zip
+
+      # Optional: add a repository secret WINGET_TOKEN (classic GitHub token with public_repo scope)
+      # and every release is submitted to microsoft/winget-pkgs automatically.
+      - name: Submit to winget
+        if: ${{ env.WINGET_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          ./wingetcreate.exe submit --token $env:WINGET_TOKEN "dist/winget"
