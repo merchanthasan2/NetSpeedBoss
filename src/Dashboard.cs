@@ -73,6 +73,7 @@ namespace NetSpeedBoss
             tabs.TabPages.Add(BuildLive());
             tabs.TabPages.Add(BuildApps());
             tabs.TabPages.Add(BuildUsage());
+            tabs.TabPages.Add(BuildSystem());
             tabs.TabPages.Add(BuildSettings());
             tabs.SelectedIndexChanged += delegate { lastUsageRefresh = DateTime.MinValue; OnTick(); };
             Controls.Add(tabs);
@@ -680,6 +681,112 @@ namespace NetSpeedBoss
             }
         }
 
+        // =================================================================== SYSTEM
+        UtilCard cpuCard, gpuCard, memCard;
+        SpecList specs;
+        Panel specHost;
+        SystemInfo sysInfo;
+        bool sysInfoRequested;
+
+        TabPage BuildSystem()
+        {
+            TabPage p = Page("System");
+            TableLayoutPanel cards = new TableLayoutPanel();
+            cards.Dock = DockStyle.Top; cards.Height = 236; cards.ColumnCount = 3; cards.RowCount = 1;
+            for (int i = 0; i < 3; i++) cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+            SystemMonitor m = app.Sys;
+            cpuCard = new UtilCard(); cpuCard.Title = "CPU"; cpuCard.Accent = Color.FromArgb(59, 130, 246); cpuCard.History = delegate(int ago) { return m.CpuAt(ago); };
+            gpuCard = new UtilCard(); gpuCard.Title = "GPU"; gpuCard.Accent = Color.FromArgb(34, 160, 90);
+            memCard = new UtilCard(); memCard.Title = "Memory"; memCard.Accent = Color.FromArgb(150, 80, 230); memCard.History = delegate(int ago) { return m.MemAt(ago); };
+            memCard.Brand = new BrandStyle("ram", "RAM", Color.FromArgb(150, 90, 235), Color.FromArgb(90, 40, 170), Color.White);
+            foreach (UtilCard c in new UtilCard[] { cpuCard, gpuCard, memCard }) { c.Dock = DockStyle.Fill; cards.Controls.Add(c); }
+
+            specHost = new Panel(); specHost.Dock = DockStyle.Fill; specHost.AutoScroll = true; specHost.Padding = new Padding(6, 4, 6, 6);
+            specs = new SpecList(); specs.Dock = DockStyle.Top; specs.Height = 120;
+            FlowLayoutPanel bar = new FlowLayoutPanel(); bar.Dock = DockStyle.Top; bar.Height = 34; bar.FlowDirection = FlowDirection.RightToLeft;
+            Button copy = new Button(); copy.Text = "Copy system info"; copy.AutoSize = true;
+            copy.Click += delegate { if (sysInfo != null) try { Clipboard.SetText(sysInfo.ToText()); copy.Text = "Copied ✔"; } catch { } };
+            bar.Controls.Add(copy);
+            specHost.Controls.Add(specs); specHost.Controls.Add(bar);
+            p.Controls.Add(specHost); p.Controls.Add(cards);
+            return p;
+        }
+
+        void RequestSystemInfo()
+        {
+            if (sysInfoRequested) return;
+            sysInfoRequested = true;
+            app.Sys.SampleGpu();                                     // enumerates GPUs (DXGI) on the UI thread
+            List<GpuInfo> gpus = app.Sys.Gpus;
+            List<AdapterInfo> nets = app.Net.Adapters;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                SystemInfo si;
+                try { si = SystemInfo.Gather(gpus, nets); } catch { si = new SystemInfo(); }
+                try { BeginInvoke((MethodInvoker)delegate { ApplySystemInfo(si); }); } catch { }
+            });
+        }
+
+        void ApplySystemInfo(SystemInfo si)
+        {
+            sysInfo = si;
+            app.Sys.BaseGhz = si.BaseGhz;
+            cpuCard.Brand = si.CpuBrand; cpuCard.Series = si.CpuSeries;
+            cpuCard.Accent = si.CpuBrand != null && si.CpuBrand.Key != "generic" ? si.CpuBrand.Back : cpuCard.Accent;
+            if (si.MemSummary.Length > 0)
+            {
+                string[] parts = si.MemSummary.Split(' ');
+                memCard.Brand = new BrandStyle("ram", parts.Length > 2 ? parts[2] : "RAM", Color.FromArgb(150, 90, 235), Color.FromArgb(90, 40, 170), Color.White);
+                memCard.Series = parts[0] + " " + parts[1];
+            }
+            List<SpecRow> rows = new List<SpecRow>(si.Rows);
+            rows.Add(new SpecRow("Uptime", SystemInfo.Uptime(), null));
+            specs.Rows = rows;
+            specs.Height = specs.ContentHeight;
+            TickSystem();
+        }
+
+        void TickSystem()
+        {
+            RequestSystemInfo();
+            SystemMonitor m = app.Sys;
+            m.SampleGpu();
+
+            cpuCard.Value = m.Cpu.ToString("0") + "%";
+            cpuCard.Line1 = (sysInfo != null ? sysInfo.CpuName : "");
+            cpuCard.Line2 = (m.CpuGhz > 0 ? m.CpuGhz.ToString("0.00") + " GHz now" : "") +
+                            (sysInfo != null && sysInfo.Cores > 0 ? (m.CpuGhz > 0 ? "   ·   " : "") + sysInfo.Cores + " cores / " + sysInfo.Threads + " threads" : "");
+
+            if (m.Gpus.Count > 0)
+            {
+                GpuInfo g = m.Gpus[0];
+                gpuCard.Brand = g.Brand; gpuCard.Series = SystemInfo.Series(g.Name);
+                if (g.Brand != null && g.Brand.Key != "generic") gpuCard.Accent = g.Brand.Key == "amd" ? Color.FromArgb(220, 40, 40) : g.Brand.Back;
+                gpuCard.History = delegate(int ago) { return SystemMonitor.HistAt(g.Hist, g.Pos, ago); };
+                gpuCard.Value = g.Util < 0 ? "n/a" : g.Util.ToString("0") + "%";
+                gpuCard.Line1 = g.Name;
+                string vram = g.Vram >= 512L * 1048576
+                    ? "VRAM " + Fmt.Size(g.DedicatedUsed) + " / " + Fmt.Size(g.Vram)
+                    : "Shared memory " + Fmt.Size(g.SharedUsed);
+                for (int i = 1; i < m.Gpus.Count; i++)
+                    vram += "   ·   GPU " + (i + 1) + ": " + (m.Gpus[i].Util < 0 ? "n/a" : m.Gpus[i].Util.ToString("0") + "%");
+                gpuCard.Line2 = vram;
+            }
+            else { gpuCard.Value = "n/a"; gpuCard.Line1 = "No GPU usage information available"; gpuCard.Line2 = ""; }
+
+            memCard.Value = m.Mem.ToString("0") + "%";
+            memCard.Line1 = Fmt.Size(m.MemUsed) + " used of " + Fmt.Size(m.MemTotal);
+            memCard.Line2 = (sysInfo != null && sysInfo.MemSummary.Length > 0 ? sysInfo.MemSummary + "   ·   " : "") +
+                            "committed " + Fmt.Size(m.CommitUsed) + " / " + Fmt.Size(m.CommitTotal);
+
+            cpuCard.Invalidate(); gpuCard.Invalidate(); memCard.Invalidate();
+            if (specs.Rows.Count > 0)
+            {
+                SpecRow last = specs.Rows[specs.Rows.Count - 1];
+                if (last.Label == "Uptime") { last.Value = SystemInfo.Uptime(); specs.Invalidate(); }
+            }
+        }
+
         // =================================================================== SETTINGS
         TabPage BuildSettings()
         {
@@ -965,6 +1072,7 @@ namespace NetSpeedBoss
                 case 0: TickLive(); break;
                 case 1: TickApps(); break;
                 case 2: TickUsage(); break;
+                case 3: TickSystem(); break;
             }
         }
 

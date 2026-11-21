@@ -32,7 +32,7 @@ $files = @(Get-ChildItem $src -Filter *.cs | ForEach-Object { $_.FullName }) + (
 $exe = Join-Path $out 'NetSpeedBoss.exe'
 & $csc /nologo /target:winexe /platform:x64 /optimize+ /out:"$exe" `
     /win32icon:"$ico" /win32manifest:"$(Join-Path $src 'app.manifest')" `
-    /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll `
+    /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Management.dll `
     $files
 if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 Write-Host "Built $exe ($Version)"

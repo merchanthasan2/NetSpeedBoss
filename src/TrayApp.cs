@@ -16,6 +16,7 @@ namespace NetSpeedBoss
         public readonly Settings S;
         public readonly UsageStore Usage = new UsageStore();
         public readonly UsageLog Log = new UsageLog();
+        public readonly SystemMonitor Sys = new SystemMonitor();
         public readonly NetMonitor Net = new NetMonitor();
         public readonly ProcessMonitor Procs = new ProcessMonitor();
         public ContextMenuStrip Menu;
@@ -216,6 +217,7 @@ namespace NetSpeedBoss
             histPos = (histPos + 1) % HistRx.Length;
             Usage.Add(Net.RxDelta, Net.TxDelta);
             Log.Add(Net.RxDelta, Net.TxDelta, CurRx, CurTx);
+            Sys.Sample();   // CPU + memory history (cheap); GPU is sampled by the System tab
 
             // floating meter + fullscreen auto-hide
             bool fs = S.HideOnFullscreen && IsFullscreenAppRunning();
