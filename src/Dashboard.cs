@@ -559,7 +559,7 @@ namespace NetSpeedBoss
             row("Custom colors", tcol);
 
             header("Floating meter");
-            sShowMeter = check("Show floating speed meter"); row("", sShowMeter);
+            sShowMeter = check("Show a floating speed window instead of the taskbar meter"); row("", sShowMeter);
             sTop = check("Always on top"); row("", sTop);
             sLock = check("Lock position"); row("", sLock);
             sClickThrough = check("Click-through (use the tray icon for the menu)"); row("", sClickThrough);
@@ -729,8 +729,18 @@ namespace NetSpeedBoss
             savingUi = true;
             try
             {
-                if (sShowMeter.Checked != meterWas) app.ToggleMeter();
-                if (sTaskbar.Checked != s.ShowOnTaskbar) app.ToggleTaskbar();
+                // taskbar meter and floating meter are mutually exclusive
+                bool wantMeter = sShowMeter.Checked, wantTb = sTaskbar.Checked;
+                if (wantMeter && !meterWas) app.ToggleMeter();
+                else if (wantTb && !s.ShowOnTaskbar) app.ToggleTaskbar();
+                else
+                {
+                    if (!wantMeter && s.ShowMeter) app.ToggleMeter();
+                    if (!wantTb && s.ShowOnTaskbar) app.ToggleTaskbar();
+                }
+                loadingSettings = true;
+                sShowMeter.Checked = s.ShowMeter; sTaskbar.Checked = s.ShowOnTaskbar;
+                loadingSettings = false;
                 app.Changed();
                 if (clickWas != s.ClickThrough) app.MeterClickThroughChanged();
             }
