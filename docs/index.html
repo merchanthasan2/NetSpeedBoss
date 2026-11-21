@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetSpeed Boss · Live network speed on your Windows taskbar</title>
+<meta name="description" content="Free, open-source Windows app that shows your live download and upload speed on the taskbar, which apps use your connection, and how much data you use. Install with winget.">
+<meta property="og:title" content="NetSpeed Boss">
+<meta property="og:description" content="See your internet speed on the Windows taskbar. Free and open source.">
+<meta property="og:image" content="images/dashboard-live.png">
+<link rel="icon" href="images/icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Martian+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0a0c0f; --ink-2:#11151a; --ink-3:#181d24; --line:#232a33; --line-2:#2e3742;
+  --paper:#e9edf1; --mute:#8b96a3; --dim:#5d6773;
+  --down:#46d778; --down-glow:rgba(70,215,120,.35);
+  --up:#ffa53c;  --up-glow:rgba(255,165,60,.35);
+  --display:"Bricolage Grotesque", ui-sans-serif, sans-serif;
+  --mono:"Martian Mono", ui-monospace, monospace;
+  --r:14px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--ink);color:var(--paper);font:17px/1.6 var(--display);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:inherit}
+img{max-width:100%;display:block}
+.wrap{max-width:1160px;margin:0 auto;padding:0 24px}
+
+/* atmosphere: blueprint grid + grain */
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:56px 56px;opacity:.28;mask-image:radial-gradient(ellipse 90% 60% at 50% 0%,#000 30%,transparent 75%)}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:100;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+main,header,footer{position:relative;z-index:1}
+
+/* nav */
+nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:-.02em;text-decoration:none;font-size:19px}
+.brand img{width:30px;height:30px}
+.navlinks{display:flex;gap:26px;font-size:15px;color:var(--mute)}
+.navlinks a{text-decoration:none;transition:color .2s}
+.navlinks a:hover{color:var(--paper)}
+@media (max-width:720px){.navlinks a:not(.gh){display:none}}
+
+/* hero */
+.hero{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding-top:56px;padding-bottom:40px}
+@media (max-width:960px){.hero{grid-template-columns:1fr;gap:40px;padding-top:24px}}
+.eyebrow{font:600 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--down);display:inline-flex;align-items:center;gap:10px}
+.eyebrow::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--down);box-shadow:0 0 12px var(--down);animation:pulse 1.6s infinite}
+@keyframes pulse{50%{opacity:.35}}
+h1{font-size:clamp(44px,6.4vw,82px);line-height:.95;letter-spacing:-.045em;margin:22px 0 22px;font-weight:800}
+h1 em{font-style:normal;background:linear-gradient(100deg,var(--down),#b8f5cc 45%,var(--up));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{font-size:20px;color:#c3cbd4;max-width:34ch;margin:0 0 34px}
+.cta{display:flex;flex-wrap:wrap;gap:14px;align-items:stretch}
+.btn{display:inline-flex;align-items:center;gap:12px;padding:16px 24px;border-radius:12px;font-weight:600;text-decoration:none;font-size:17px;transition:transform .15s, box-shadow .2s, background .2s}
+.btn-primary{background:var(--down);color:#04140a;box-shadow:0 10px 40px -10px var(--down-glow)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 16px 50px -10px var(--down-glow)}
+.btn svg{width:20px;height:20px}
+.cmd{display:flex;align-items:center;gap:12px;background:var(--ink-2);border:1px solid var(--line-2);border-radius:12px;padding:0 8px 0 18px;font:400 14px var(--mono);color:#d4dbe2;min-height:56px}
+.cmd .p{color:var(--dim)}
+.copy{background:var(--ink-3);border:1px solid var(--line-2);color:var(--mute);border-radius:8px;padding:8px 12px;font:600 12px var(--mono);cursor:pointer;transition:all .2s}
+.copy:hover{color:var(--paper);border-color:var(--mute)}
+.copy.ok{color:var(--down);border-color:var(--down)}
+.meta{margin-top:22px;display:flex;flex-wrap:wrap;gap:8px 18px;font:400 12.5px var(--mono);color:var(--mute)}
+.meta span::before{content:"✓ ";color:var(--down)}
+
+/* live instrument */
+.instrument{position:relative;background:linear-gradient(180deg,var(--ink-2),var(--ink));border:1px solid var(--line-2);border-radius:20px;padding:26px;box-shadow:0 40px 120px -40px rgba(70,215,120,.18), inset 0 1px 0 rgba(255,255,255,.04)}
+.instrument .label{font:600 11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);display:flex;justify-content:space-between}
+.readouts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0 16px}
+.ro{background:var(--ink);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.ro .k{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.ro.d .k{color:var(--down)} .ro.u .k{color:var(--up)}
+.ro .v{font:600 clamp(26px,3.2vw,36px)/1.15 var(--mono);letter-spacing:-.04em;margin-top:8px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ro .v small{font-size:.45em;color:var(--mute);letter-spacing:0;margin-left:6px}
+canvas#scope{width:100%;height:170px;display:block;border-radius:10px;background:
+  linear-gradient(var(--line) 1px,transparent 1px) 0 0/100% 42.5px, var(--ink)}
+.taskbar{margin-top:18px;height:52px;border-radius:12px;background:rgba(235,238,242,.92);display:flex;align-items:center;padding:0 14px;gap:14px;color:#1a1a1a;box-shadow:0 8px 30px -10px rgba(0,0,0,.6)}
+.taskbar .apps{display:flex;gap:9px;margin:0 auto}
+.taskbar .apps i{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#c9d3de,#9aa6b3);display:block}
+.taskbar .apps i:nth-child(2){background:linear-gradient(135deg,#7cb7ff,#2f7fe6)}
+.taskbar .apps i:nth-child(4){background:linear-gradient(135deg,#ffd36b,#f29f19)}
+.tbm{font:700 11.5px/1.25 "Segoe UI",var(--display);font-variant-numeric:tabular-nums;padding:4px 8px;border-radius:6px;outline:2px dashed transparent;position:relative;min-width:104px}
+.tbm div{display:flex;justify-content:space-between;gap:10px}
+.tbm b{font-size:9px}
+.tbm .a1{color:#008c3c} .tbm .a2{color:#cd6400}
+.tbm.flash{animation:hl 2.4s ease-out 1.2s 1}
+@keyframes hl{0%,60%{outline-color:var(--down);background:rgba(70,215,120,.18)}100%{outline-color:transparent}}
+.clock{font:12px/1.2 "Segoe UI",var(--display);text-align:right;color:#333}
+.callout{position:absolute;right:26px;bottom:-34px;font:600 12px var(--mono);color:var(--down);display:flex;align-items:center;gap:8px}
+.callout::before{content:"";width:34px;height:1px;background:var(--down)}
+
+/* sections */
+section{padding:110px 0}
+.kicker{font:600 12px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--up)}
+h2{font-size:clamp(34px,4.4vw,56px);line-height:1;letter-spacing:-.04em;margin:14px 0 18px;font-weight:800;max-width:18ch}
+.sub{color:var(--mute);font-size:19px;max-width:56ch;margin:0}
+
+/* steps */
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin-top:56px;counter-reset:s;border-top:1px solid var(--line-2)}
+@media (max-width:860px){.steps{grid-template-columns:1fr}}
+.step{padding:34px 30px 10px 0;position:relative}
+.step + .step{padding-left:30px;border-left:1px solid var(--line-2)}
+@media (max-width:860px){.step + .step{border-left:0;padding-left:0;border-top:1px solid var(--line-2)}}
+.step::before{counter-increment:s;content:"0" counter(s);font:600 13px var(--mono);color:var(--down);display:block;margin-bottom:18px}
+.step h3{font-size:24px;letter-spacing:-.02em;margin:0 0 10px}
+.step p{color:var(--mute);margin:0 0 18px}
+.step code{font:13px var(--mono);background:var(--ink-2);border:1px solid var(--line);padding:3px 7px;border-radius:6px;color:#d4dbe2;word-break:break-all}
+
+/* features */
+.features{display:grid;grid-template-columns:repeat(6,1fr);gap:16px;margin-top:56px}
+.f{background:var(--ink-2);border:1px solid var(--line);border-radius:var(--r);padding:28px;grid-column:span 2;transition:border-color .25s, transform .25s}
+.f:hover{border-color:var(--line-2);transform:translateY(-3px)}
+.f.wide{grid-column:span 3}
+@media (max-width:960px){.f,.f.wide{grid-column:span 3}}
+@media (max-width:620px){.f,.f.wide{grid-column:span 6}}
+.f .ic{width:42px;height:42px;border-radius:10px;display:grid;place-items:center;background:var(--ink);border:1px solid var(--line-2);margin-bottom:20px}
+.f .ic svg{width:22px;height:22px}
+.f h3{font-size:21px;letter-spacing:-.02em;margin:0 0 8px}
+.f p{color:var(--mute);margin:0;font-size:16px}
+.apps-mock{margin-top:20px;border:1px solid var(--line);border-radius:10px;overflow:hidden;font:12px var(--mono)}
+.apps-mock div{display:grid;grid-template-columns:1fr 78px 78px;padding:8px 12px;gap:8px;border-top:1px solid var(--line)}
+.apps-mock div:first-child{border-top:0;color:var(--dim);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase}
+.apps-mock span:nth-child(n+2){text-align:right}
+.apps-mock .dn{color:var(--down)} .apps-mock .upc{color:var(--up)}
+.bars{display:flex;align-items:flex-end;gap:5px;height:90px;margin-top:22px}
+.bars i{flex:1;border-radius:3px 3px 0 0;background:linear-gradient(var(--up) 0 var(--u,12%),var(--down) 0);height:var(--h);opacity:.9;transform-origin:bottom;animation:grow .9s cubic-bezier(.2,.8,.2,1) both}
+@keyframes grow{from{transform:scaleY(0)}}
+.cap{margin-top:14px;height:8px;border-radius:99px;background:var(--ink);border:1px solid var(--line);overflow:hidden}
+.cap i{display:block;height:100%;width:68%;background:linear-gradient(90deg,var(--down),var(--up))}
+.cap-l{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--dim);margin-top:8px}
+.swatches{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap}
+.swatches span{font:12px var(--mono);border:1px solid var(--line-2);padding:7px 11px;border-radius:8px;color:var(--mute)}
+.swatches span b{font-weight:700;color:var(--paper)}
+
+/* screenshot */
+.shot{margin-top:56px;position:relative}
+.shot figure{margin:0;border-radius:16px;overflow:hidden;border:1px solid var(--line-2);box-shadow:0 50px 120px -50px rgba(0,0,0,.9),0 0 0 8px var(--ink-2)}
+.shot figcaption{font:12px var(--mono);color:var(--dim);margin-top:22px;text-align:center}
+.duo{display:grid;grid-template-columns:1.25fr 1fr;gap:28px;align-items:start}
+@media (max-width:860px){.duo{grid-template-columns:1fr}}
+
+/* admin note */
+.note{display:grid;grid-template-columns:auto 1fr;gap:22px;background:linear-gradient(135deg,rgba(255,165,60,.08),transparent 60%);border:1px solid rgba(255,165,60,.28);border-radius:var(--r);padding:28px 30px;margin-top:40px}
+.note .ic{font:800 28px var(--display);color:var(--up)}
+.note h3{margin:0 0 6px;font-size:20px}
+.note p{margin:0;color:#c3cbd4}
+
+/* faq */
+.faq{margin-top:48px;border-top:1px solid var(--line-2)}
+details{border-bottom:1px solid var(--line-2);padding:4px 0}
+summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:22px 0;font-size:20px;font-weight:600;letter-spacing:-.01em}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";font:400 26px var(--mono);color:var(--mute);transition:transform .25s}
+details[open] summary::after{transform:rotate(45deg);color:var(--down)}
+details p{color:var(--mute);margin:-6px 0 24px;max-width:72ch}
+details code{font:14px var(--mono);color:#d4dbe2}
+
+/* final cta */
+.final{text-align:center;padding:120px 0 100px}
+.final h2{margin:14px auto 18px;max-width:16ch}
+.final .sub{margin:0 auto 38px}
+.final .cta{justify-content:center}
+footer{border-top:1px solid var(--line);padding:34px 0 48px;color:var(--dim);font:13px var(--mono)}
+footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px}
+footer a{color:var(--mute);text-decoration:none}
+footer a:hover{color:var(--paper)}
+
+/* small screens */
+.hero>*,.steps>*,.features>*{min-width:0}
+.cmd{max-width:100%}
+@media (max-width:620px){
+  body{font-size:16px}
+  .lede{font-size:18px}
+  .cta{flex-direction:column}
+  .btn{justify-content:center}
+  .cmd{padding:12px 10px 12px 14px;font-size:12px;flex-wrap:wrap}
+  .cmd .p{display:none}
+  .cmd span{flex:1;text-align:left;overflow-wrap:anywhere;font-size:11.5px}
+  .instrument{padding:16px}
+  .readouts{gap:10px}
+  .ro{padding:12px}
+  .ro .v{font-size:22px}
+  .callout{display:none}
+  .taskbar .apps i:nth-child(n+4){display:none}
+  section{padding:80px 0}
+  .step code{display:block}
+  .note{grid-template-columns:1fr;padding:22px}
+}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(24px);transition:opacity .8s cubic-bezier(.2,.8,.2,1),transform .8s cubic-bezier(.2,.8,.2,1)}
+.rv.in{opacity:1;transform:none}
+.hero .rv{transition-delay:calc(var(--d,0) * 110ms)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.rv{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<header class="wrap">
+  <nav>
+    <a class="brand" href="#"><img src="images/icon.png" alt="">NetSpeed Boss</a>
+    <div class="navlinks">
+      <a href="#start">Get started</a>
+      <a href="#features">Features</a>
+      <a href="#faq">FAQ</a>
+      <a class="gh" href="https://github.com/merchanthasan2/NetSpeedBoss">GitHub ↗</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div>
+      <div class="eyebrow rv" style="--d:0">Free &amp; open source · Windows 10 / 11</div>
+      <h1 class="rv" style="--d:1">Your internet speed, <em>right on the taskbar.</em></h1>
+      <p class="lede rv" style="--d:2">NetSpeed Boss sits next to your clock and shows exactly how fast you're downloading and uploading, second by second. One glance, no guessing.</p>
+      <div class="cta rv" style="--d:3">
+        <a class="btn btn-primary" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/latest/download/NetSpeedBoss-Setup.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+          Download for Windows
+        </a>
+        <div class="cmd"><span class="p">&gt;</span><span id="wg">winget install merchanthasan2.NetSpeedBoss</span><button class="copy" data-copy="winget install merchanthasan2.NetSpeedBoss">COPY</button></div>
+      </div>
+      <div class="meta rv" style="--d:4"><span>No admin rights needed</span><span>~120 KB app</span><span>No ads, no tracking</span></div>
+    </div>
+
+    <div class="instrument rv" style="--d:2" aria-label="Animated demo of the speed meter">
+      <div class="label"><span>Live · Ethernet</span><span id="clockLbl">00:00:00</span></div>
+      <div class="readouts">
+        <div class="ro d"><div class="k">▼ Download</div><div class="v" id="vd">0.00<small>MB/s</small></div></div>
+        <div class="ro u"><div class="k">▲ Upload</div><div class="v" id="vu">0.00<small>MB/s</small></div></div>
+      </div>
+      <canvas id="scope" width="1000" height="340"></canvas>
+      <div class="taskbar">
+        <div class="apps"><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="tbm flash" id="tbm"><div><b class="a1">▼</b><span id="td">0 KB/s</span></div><div><b class="a2">▲</b><span id="tu">0 KB/s</span></div></div>
+        <div class="clock" id="tclock">14:42<br>21/11/2026</div>
+      </div>
+      <div class="callout">this is what you'll see</div>
+    </div>
+  </div>
+
+  <section id="start">
+    <div class="wrap">
+      <div class="kicker rv">Get started</div>
+      <h2 class="rv">Up and running in under a minute.</h2>
+      <p class="sub rv">No accounts, no configuration. Install it and your speed appears on the taskbar straight away.</p>
+      <div class="steps">
+        <div class="step rv">
+          <h3>Install</h3>
+          <p>Open <b>Terminal</b> or PowerShell and run the command below, or download the installer and double-click it.</p>
+          <code>winget install merchanthasan2.NetSpeedBoss</code>
+        </div>
+        <div class="step rv">
+          <h3>Look down</h3>
+          <p>Your live <span style="color:var(--down)">▼ download</span> and <span style="color:var(--up)">▲ upload</span> speed now sits next to the clock. Drag it anywhere along the taskbar.</p>
+        </div>
+        <div class="step rv">
+          <h3>Dig deeper</h3>
+          <p><b>Double-click</b> the meter for graphs, apps and data usage. <b>Right-click</b> it for every option: bold text, units, colors and more.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features" style="padding-top:0">
+    <div class="wrap">
+      <div class="kicker rv">What it does</div>
+      <h2 class="rv">Everything about your connection, nothing in your way.</h2>
+      <div class="features">
+        <div class="f wide rv">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#46d778" stroke-width="2" stroke-linecap="round"><rect x="2" y="15" width="20" height="6" rx="2"/><path d="M16 18h3"/><path d="M7 4v7m0 0-3-3m3 3 3-3"/><path d="M15 11V4m0 0-3 3m3-3 3 3" stroke="#ffa53c"/></svg></div>
+          <h3>Speed on your taskbar</h3>
+          <p>Blends into the Windows taskbar, follows light and dark mode, steps aside for full-screen games and hides when the taskbar auto-hides.</p>
+        </div>
+        <div class="f wide rv">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#46d778" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l4-5 4 3 5-8 5 6"/><path d="M3 21h18"/></svg></div>
+          <h3>Live speed graph</h3>
+          <p>Watch the last 1 to 10 minutes of traffic. Hover anywhere on the graph for the exact speed at that moment, plus your peak and session totals.</p>
+        </div>
+        <div class="f rv" style="grid-column:span 2">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#ffa53c" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 13h8M8 16h5"/></svg></div>
+          <h3>Which app is using it?</h3>
+          <p>See every program on the network, how fast it's going and which servers it's talking to.</p>
+          <div class="apps-mock">
+            <div><span>App</span><span>Down</span><span>Up</span></div>
+            <div><span>Browser</span><span class="dn">4.20 MB/s</span><span class="upc">96 KB/s</span></div>
+            <div><span>Game launcher</span><span class="dn">1.85 MB/s</span><span class="upc">12 KB/s</span></div>
+            <div><span>Cloud sync</span><span class="dn">20 KB/s</span><span class="upc">780 KB/s</span></div>
+          </div>
+        </div>
+        <div class="f rv">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#46d778" stroke-width="2" stroke-linecap="round"><path d="M5 20V10M10 20V4M15 20v-7M20 20v-4"/></svg></div>
+          <h3>Data usage &amp; caps</h3>
+          <p>Daily, monthly and all-time totals. Set a monthly limit and get warned before you go over.</p>
+          <div class="bars" id="bars"></div>
+          <div class="cap"><i></i></div>
+          <div class="cap-l"><span>68 GB used</span><span>100 GB plan</span></div>
+        </div>
+        <div class="f rv">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#ffa53c" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h6"/><circle cx="18" cy="16" r="3"/></svg></div>
+          <h3>Make it yours</h3>
+          <p>Bold text, any font, any size, your own colors, bytes or bits, fast or relaxed refresh.</p>
+          <div class="swatches"><span><b>Bold</b></span><span>Segoe UI</span><span>MB/s · Mbps</span><span>0.5s – 5s</span></div>
+        </div>
+        <div class="f wide rv">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#46d778" stroke-width="2" stroke-linecap="round"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M9 20h6"/></svg></div>
+          <h3>Floating meter, too</h3>
+          <p>Prefer it somewhere else? Turn on a small always-on-top meter with a mini graph. It snaps to screen edges and can be made click-through.</p>
+        </div>
+        <div class="f wide rv">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#ffa53c" stroke-width="2" stroke-linecap="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg></div>
+          <h3>Light, private, honest</h3>
+          <p>A tiny native app using almost no CPU. Your data stays on your PC, with no account, telemetry or ads. MIT-licensed source on GitHub.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding-top:0">
+    <div class="wrap">
+      <div class="kicker rv">The dashboard</div>
+      <h2 class="rv">Double-click for the full picture.</h2>
+      <div class="shot duo">
+        <figure class="rv"><img src="images/dashboard-live.png" alt="NetSpeed Boss dashboard showing current, peak and session speed with a two-minute speed history graph" loading="lazy" width="900" height="418"></figure>
+        <figure class="rv"><img src="images/settings-taskbar.png" alt="Taskbar settings: font, size, bold text and colors" loading="lazy" width="900" height="285"></figure>
+      </div>
+      <div class="note rv">
+        <div class="ic">!</div>
+        <div>
+          <h3>Want exact per-app speeds?</h3>
+          <p>Windows only lets administrators read live per-app network traffic. Right-click the meter and choose <b>Restart as administrator</b> to see the speed of every app, including games, video calls and streaming. Without it, you still see which apps are connected and where to.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" style="padding-top:0">
+    <div class="wrap">
+      <div class="kicker rv">Questions</div>
+      <h2 class="rv">Good to know.</h2>
+      <div class="faq">
+        <details class="rv"><summary>Is it really free?</summary><p>Yes. NetSpeed Boss is free and open source under the MIT license, with no ads, upsells or accounts.</p></details>
+        <details class="rv"><summary>Windows says "Windows protected your PC". Is it safe?</summary><p>That SmartScreen message appears for new apps that are not yet code-signed. Click <b>More info</b>, then <b>Run anyway</b>. The full source code is on GitHub and every release is built automatically from it. Installing with winget avoids the prompt entirely.</p></details>
+        <details class="rv"><summary>Will it slow down my PC or my internet?</summary><p>No. It reads the counters Windows already keeps, once a second, and uses a fraction of a percent of CPU. It never sends or downloads anything itself.</p></details>
+        <details class="rv"><summary>How do I move or customise the taskbar meter?</summary><p>Drag it left or right along the taskbar. Right-click for quick options such as <b>Bold taskbar text</b>, or double-click and open <b>Settings</b> for font, size and colors.</p></details>
+        <details class="rv"><summary>Where is my data stored?</summary><p>Only on your PC, in <code>%APPDATA%\NetSpeedBoss</code>: your settings and a daily usage history you can export to CSV.</p></details>
+        <details class="rv"><summary>How do I update or uninstall?</summary><p>Update with <code>winget upgrade merchanthasan2.NetSpeedBoss</code> or by running a newer installer. Uninstall from <b>Settings → Apps</b>, or with <code>winget uninstall merchanthasan2.NetSpeedBoss</code>.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <div class="wrap final">
+    <div class="kicker rv">Ready?</div>
+    <h2 class="rv">Stop guessing. Start seeing.</h2>
+    <p class="sub rv">Free for Windows 10 and 11. Takes a few seconds to install.</p>
+    <div class="cta rv">
+      <a class="btn btn-primary" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/latest/download/NetSpeedBoss-Setup.exe">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+        Download for Windows
+      </a>
+      <div class="cmd"><span class="p">&gt;</span><span>winget install merchanthasan2.NetSpeedBoss</span><button class="copy" data-copy="winget install merchanthasan2.NetSpeedBoss">COPY</button></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>NetSpeed Boss · MIT License</span>
+    <span><a href="https://github.com/merchanthasan2/NetSpeedBoss">Source</a> · <a href="https://github.com/merchanthasan2/NetSpeedBoss/releases">Releases</a> · <a href="https://github.com/merchanthasan2/NetSpeedBoss/issues">Report an issue</a></span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  // copy buttons
+  document.querySelectorAll('.copy').forEach(function(b){
+    b.addEventListener('click',function(){
+      var t=b.getAttribute('data-copy');
+      var fallback=function(){var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove()};
+      if(navigator.clipboard){navigator.clipboard.writeText(t).catch(fallback)}else{fallback()}
+      b.textContent='COPIED';b.classList.add('ok');setTimeout(function(){b.textContent='COPY';b.classList.remove('ok')},1600);
+    });
+  });
+
+  // scroll reveal
+  var io='IntersectionObserver' in window?new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.12}):null;
+  document.querySelectorAll('.rv').forEach(function(el){io?io.observe(el):el.classList.add('in')});
+
+  // usage bars
+  var bars=document.getElementById('bars');
+  for(var i=0;i<18;i++){var b=document.createElement('i');var h=22+Math.round(Math.abs(Math.sin(i*1.7)+Math.sin(i*.6))*36)+(i==17?18:0);
+    b.style.setProperty('--h',Math.min(100,h)+'%');b.style.setProperty('--u',(8+((i*37)%14))+'%');b.style.animationDelay=(i*35)+'ms';bars.appendChild(b)}
+
+  // live instrument simulation
+  var reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var cv=document.getElementById('scope'),cx=cv.getContext('2d');
+  var N=90,hd=[],hu=[],t=0,burst=0;
+  for(var k=0;k<N;k++){hd.push(0);hu.push(0)}
+  function fmt(b){ if(b<1024)return [b.toFixed(0),'B/s']; if(b<1048576)return [(b/1024).toFixed(b<10240?2:b<102400?1:0),'KB/s']; var m=b/1048576; return [m.toFixed(m<10?2:m<100?1:0),'MB/s'] }
+  function short(b){var f=fmt(b);return f[0]+' '+f[1]}
+  function step(){
+    t++;
+    if(burst<=0 && Math.random()<.07) burst=6+Math.random()*14;
+    var base=burst>0? (18+Math.random()*26)*1048576*(0.6+0.4*Math.sin(t/3)) : (20+Math.random()*900)*1024;
+    if(burst>0) burst--;
+    var up=burst>0? base*(0.03+Math.random()*.05) : (8+Math.random()*120)*1024;
+    if(Math.random()<.05) up=(3+Math.random()*9)*1048576;
+    hd.push(base);hu.push(up);hd.shift();hu.shift();
+    var d=fmt(base),u=fmt(up);
+    document.getElementById('vd').innerHTML=d[0]+'<small>'+d[1]+'</small>';
+    document.getElementById('vu').innerHTML=u[0]+'<small>'+u[1]+'</small>';
+    document.getElementById('td').textContent=short(base);
+    document.getElementById('tu').textContent=short(up);
+    var now=new Date();
+    document.getElementById('clockLbl').textContent=now.toLocaleTimeString([], {hour12:false});
+    document.getElementById('tclock').innerHTML=now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+'<br>'+now.toLocaleDateString();
+    draw();
+  }
+  function series(arr,max,color,glow){
+    var W=cv.width,H=cv.height;cx.beginPath();
+    for(var i=0;i<N;i++){var x=i/(N-1)*W,y=H-6-(arr[i]/max)*(H-24);i?cx.lineTo(x,y):cx.moveTo(x,y)}
+    cx.lineWidth=3;cx.strokeStyle=color;cx.shadowColor=glow;cx.shadowBlur=14;cx.stroke();cx.shadowBlur=0;
+    cx.lineTo(W,H);cx.lineTo(0,H);cx.closePath();
+    var g=cx.createLinearGradient(0,0,0,H);g.addColorStop(0,glow);g.addColorStop(1,'rgba(0,0,0,0)');cx.fillStyle=g;cx.fill();
+  }
+  function draw(){
+    var W=cv.width,H=cv.height;cx.clearRect(0,0,W,H);
+    var max=1048576*4;for(var i=0;i<N;i++)max=Math.max(max,hd[i],hu[i]);max*=1.15;
+    series(hd,max,'#46d778','rgba(70,215,120,.28)');
+    series(hu,max,'#ffa53c','rgba(255,165,60,.22)');
+  }
+  for(var w=0;w<N;w++)step();
+  if(!reduce) setInterval(step,1000);
+})();
+</script>
+</body>
+</html>
