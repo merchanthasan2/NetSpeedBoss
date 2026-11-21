@@ -18,7 +18,7 @@ jobs:
   release:
     runs-on: windows-latest
     env:
-      PACKAGE_ID: merchanthasan2.NetSpeedBoss
+      PACKAGE_ID: Net.NetSpeedBoss
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
 
             **winget** (once the package is live in the winget catalog):
             ```
-            winget install merchanthasan2.NetSpeedBoss
+            winget install Net.NetSpeedBoss
             ```
 
             **Or download** `NetSpeedBoss-${{ steps.v.outputs.version }}-Setup.exe` below and run it.
