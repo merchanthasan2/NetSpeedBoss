@@ -73,6 +73,7 @@ Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName} now"; Flags: nowait
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExe}"; Flags: runhidden; RunOnceId: "KillApp"
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN NetSpeedBoss /F"; Flags: runhidden; RunOnceId: "DelTask"
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}"

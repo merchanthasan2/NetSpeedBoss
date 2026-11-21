@@ -6,20 +6,31 @@ using System.Text;
 
 namespace NetSpeedBoss
 {
-    /// <summary>Daily download/upload totals, persisted to %APPDATA%\NetSpeedBoss\usage.csv</summary>
+    /// <summary>Daily download/upload totals, persisted to Documents\NetSpeed Boss\daily-usage.csv</summary>
     public class UsageStore
     {
         readonly Dictionary<DateTime, long[]> days = new Dictionary<DateTime, long[]>();
         readonly object gate = new object();
-        static string FilePath { get { return Path.Combine(Settings.Dir, "usage.csv"); } }
+        public static string FilePath { get { return Path.Combine(Settings.LogDir, "daily-usage.csv"); } }
+        static string LegacyPath { get { return Path.Combine(Settings.Dir, "usage.csv"); } }
         bool dirty;
 
         public void Load()
         {
             try
             {
-                if (!File.Exists(FilePath)) return;
-                foreach (string line in File.ReadAllLines(FilePath))
+                string src = FilePath;
+                if (!File.Exists(src))
+                {
+                    if (!File.Exists(LegacyPath)) return;
+                    src = LegacyPath;     // first run of a version with Documents logs: migrate
+                    dirty = true;
+                }
+                string[] lines;
+                using (FileStream fs = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (StreamReader sr = new StreamReader(fs))
+                    lines = sr.ReadToEnd().Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (string line in lines)
                 {
                     string[] p = line.Split(',');
                     if (p.Length < 3) continue;
@@ -40,16 +51,20 @@ namespace NetSpeedBoss
                 if (!dirty) return;
                 try
                 {
-                    Directory.CreateDirectory(Settings.Dir);
+                    Directory.CreateDirectory(Settings.LogDir);
+                    UsageLog.WriteReadme();
                     List<DateTime> keys = new List<DateTime>(days.Keys);
                     keys.Sort();
-                    StringBuilder sb = new StringBuilder();
+                    StringBuilder sb = new StringBuilder("Date,Downloaded bytes,Uploaded bytes,Total bytes,Downloaded MB,Uploaded MB,Total MB\r\n");
                     foreach (DateTime k in keys)
-                        sb.Append(k.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).Append(',')
-                          .Append(days[k][0]).Append(',').Append(days[k][1]).AppendLine();
+                    {
+                        long rx = days[k][0], tx = days[k][1];
+                        sb.AppendFormat(CultureInfo.InvariantCulture, "{0:yyyy-MM-dd},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00}\r\n",
+                            k, rx, tx, rx + tx, rx / 1048576.0, tx / 1048576.0, (rx + tx) / 1048576.0);
+                    }
                     string tmp = FilePath + ".tmp";
-                    File.WriteAllText(tmp, sb.ToString());
-                    if (File.Exists(FilePath)) File.Delete(FilePath);
+                    File.WriteAllText(tmp, sb.ToString(), Encoding.UTF8);
+                    if (File.Exists(FilePath)) File.Delete(FilePath);   // fails (and retries next minute) if Excel has it open
                     File.Move(tmp, FilePath);
                     dirty = false;
                 }

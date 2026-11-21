@@ -52,8 +52,11 @@ Works on Windows 10 and 11 (64-bit). **No administrator rights needed.**
 - **Taskbar speed meter.** Blends into the taskbar, follows light and dark mode, and hides for full-screen games and when the taskbar auto-hides.
 - **Make it yours.** Bold text, any font and size, custom colors, bytes (MB/s) or bits (Mbps), and a refresh rate from 0.5 to 5 s.
 - **Live speed graph.** The last 1–10 minutes, with a hover read-out plus peak and session totals.
+- **Top downloading apps.** The five busiest apps sit right under the graph. Tick one to draw its own line on the graph.
 - **Apps tab.** Every program on the network, its speed and totals, and each server it connects to, with host names.
 - **Data usage.** Today, yesterday, this month, the last 30 days and all time, with a daily chart and CSV export.
+- **Any date range.** Pick *From* and *To* (or Today / 7 days / 30 days / This month / Last month) to see the totals, daily average, busiest day and top apps for that period.
+- **Usage logs in Documents.** `Documents\NetSpeed Boss\` holds `daily-usage.csv`, `hourly-usage.csv` (with peak speeds) and `app-usage.csv`, ready to open in Excel.
 - **Monthly data cap.** Set your plan's limit and billing day, and get warned when you reach it.
 - **Floating meter.** An optional always-on-top mini meter with a background graph that snaps to screen edges and can be click-through.
 - **Private and lightweight.** A native app of about 120 KB using almost no CPU. No account, no telemetry, no ads.
@@ -61,6 +64,7 @@ Works on Windows 10 and 11 (64-bit). **No administrator rights needed.**
 ### Per-app speeds (optional admin mode)
 Windows only lets administrators read live per-app network traffic. Right-click the meter and choose
 **Restart as administrator** to see exact download and upload speeds per app, covering TCP and UDP (games, calls, streaming).
+To make that permanent without a prompt at every sign-in, tick **Settings → Start with administrator rights at sign-in**.
 Without admin, the Apps tab still lists which apps are connected and where to.
 
 ## FAQ
@@ -72,7 +76,8 @@ No. It reads the traffic counters Windows already keeps, about once a second. It
 
 <details><summary><b>Where are my settings and history stored?</b></summary>
 
-Only on your PC, in `%APPDATA%\NetSpeedBoss\`: `settings.ini`, `usage.csv` (one line per day), and `error.log` (only if something goes wrong).
+Only on your PC. Usage logs (daily, hourly and per-app CSV files) are in `Documents\NetSpeed Boss\`.
+Settings are in `%APPDATA%\NetSpeedBoss\settings.ini`, with an `error.log` there only if something goes wrong.
 </details>
 
 <details><summary><b>How do I update or uninstall?</b></summary>

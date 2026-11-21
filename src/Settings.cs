@@ -14,6 +14,16 @@ namespace NetSpeedBoss
         public static readonly string Dir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NetSpeedBoss");
         static string FilePath { get { return Path.Combine(Dir, "settings.ini"); } }
+        /// <summary>Human-readable usage logs: Documents\NetSpeed Boss</summary>
+        public static string LogDir
+        {
+            get
+            {
+                string docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                if (string.IsNullOrEmpty(docs)) docs = Dir;
+                return Path.Combine(docs, "NetSpeed Boss");
+            }
+        }
 
         // ----- general -----
         public SpeedUnit Unit = SpeedUnit.Bytes;

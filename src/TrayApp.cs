@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -14,6 +15,7 @@ namespace NetSpeedBoss
         public const string AppName = "NetSpeed Boss";
         public readonly Settings S;
         public readonly UsageStore Usage = new UsageStore();
+        public readonly UsageLog Log = new UsageLog();
         public readonly NetMonitor Net = new NetMonitor();
         public readonly ProcessMonitor Procs = new ProcessMonitor();
         public ContextMenuStrip Menu;
@@ -75,6 +77,7 @@ namespace NetSpeedBoss
             }
             Application.ApplicationExit += delegate { Shutdown(); };
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            SystemEvents.SessionEnding += OnSessionEnding;   // Windows shutting down / signing out: write logs now
 
             if (Array.IndexOf(args, "--dashboard") >= 0 || Array.IndexOf(args, "--restarted") >= 0) ShowDashboard(Array.IndexOf(args, "--restarted") >= 0 ? 1 : 0);
         }
@@ -82,6 +85,11 @@ namespace NetSpeedBoss
         void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
             if (e.Mode == PowerModes.Resume) invoker.BeginInvoke((MethodInvoker)delegate { Net.Sample(S.Adapter); });
+        }
+
+        void OnSessionEnding(object sender, SessionEndingEventArgs e)
+        {
+            try { Log.Flush(); Usage.Save(); S.Save(); } catch { }
         }
 
         void StartShowSignalListener()
@@ -103,6 +111,89 @@ namespace NetSpeedBoss
             catch { }
         }
 
+        // ------------------------------------------------------------------ per-app download history (grouped by app name)
+        public class AppSeries { public string Name, Path; public double Rx, Tx; public long TotIn; }
+        public class GraphApp { public string Name; public Color Color; }
+
+        public readonly Dictionary<string, double[]> AppHistRx = new Dictionary<string, double[]>(StringComparer.OrdinalIgnoreCase);
+        public List<AppSeries> AppNow = new List<AppSeries>();
+        public readonly List<GraphApp> GraphApps = new List<GraphApp>();
+        public static readonly Color[] AppPalette = {
+            Color.FromArgb(59, 130, 246), Color.FromArgb(168, 85, 247), Color.FromArgb(236, 72, 153),
+            Color.FromArgb(20, 184, 166), Color.FromArgb(202, 138, 4) };
+        int pruneTick;
+
+        void RecordApps(int pos)
+        {
+            if (!Procs.EtwActive) { if (AppNow.Count > 0) AppNow = new List<AppSeries>(); return; }
+            Dictionary<string, AppSeries> by = new Dictionary<string, AppSeries>(StringComparer.OrdinalIgnoreCase);
+            List<ProcView> snap = Procs.Snapshot();
+            Log.AddApps(snap);
+            foreach (ProcView v in snap)
+            {
+                if (v.Pid == 0 || string.IsNullOrEmpty(v.Name)) continue;
+                AppSeries a;
+                if (!by.TryGetValue(v.Name, out a)) { a = new AppSeries(); a.Name = v.Name; by[v.Name] = a; }
+                a.Rx += v.Rx; a.Tx += v.Tx; a.TotIn += v.TotIn;
+                if (a.Path == null) a.Path = v.Path;
+            }
+            foreach (AppSeries a in by.Values)
+            {
+                double[] h;
+                if (!AppHistRx.TryGetValue(a.Name, out h)) { h = new double[HistRx.Length]; AppHistRx[a.Name] = h; }
+                h[pos] = a.Rx;
+            }
+            foreach (KeyValuePair<string, double[]> kv in AppHistRx) if (!by.ContainsKey(kv.Key)) kv.Value[pos] = 0;
+
+            if (++pruneTick >= 120)    // drop histories of apps that have been silent for the whole window
+            {
+                pruneTick = 0;
+                List<string> dead = new List<string>();
+                foreach (KeyValuePair<string, double[]> kv in AppHistRx)
+                {
+                    if (IsGraphed(kv.Key)) continue;
+                    bool any = false;
+                    foreach (double d in kv.Value) if (d > 0) { any = true; break; }
+                    if (!any) dead.Add(kv.Key);
+                }
+                foreach (string k in dead) AppHistRx.Remove(k);
+            }
+            AppNow = new List<AppSeries>(by.Values);
+        }
+
+        public double AppAvgRx(string name, int samples)
+        {
+            double[] h;
+            if (!AppHistRx.TryGetValue(name, out h)) return 0;
+            double s = 0;
+            for (int i = 0; i < samples; i++) s += Hist(h, i);
+            return s / samples;
+        }
+
+        public GraphApp FindGraphed(string name)
+        {
+            foreach (GraphApp g in GraphApps) if (string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)) return g;
+            return null;
+        }
+        public bool IsGraphed(string name) { return FindGraphed(name) != null; }
+
+        /// <summary>Adds or removes an app's line on the speed graph. Returns false if all colors are taken.</summary>
+        public bool ToggleGraphApp(string name)
+        {
+            GraphApp g = FindGraphed(name);
+            if (g != null) { GraphApps.Remove(g); return true; }
+            foreach (Color c in AppPalette)
+            {
+                bool used = false;
+                foreach (GraphApp x in GraphApps) if (x.Color == c) { used = true; break; }
+                if (used) continue;
+                g = new GraphApp(); g.Name = name; g.Color = c;
+                GraphApps.Add(g);
+                return true;
+            }
+            return false;
+        }
+
         public double Hist(double[] arr, int ago)
         {
             int n = arr.Length;
@@ -116,13 +207,15 @@ namespace NetSpeedBoss
             SessionRx += Net.RxDelta; SessionTx += Net.TxDelta;
             if (CurRx > PeakRx) PeakRx = CurRx;
             if (CurTx > PeakTx) PeakTx = CurTx;
-            HistRx[histPos] = CurRx; HistTx[histPos] = CurTx;
-            histPos = (histPos + 1) % HistRx.Length;
-            Usage.Add(Net.RxDelta, Net.TxDelta);
-
             // ETW totals accumulate all the time; the TCP-table-only mode is only polled while the dashboard is open
             bool dashOpen = dash != null && !dash.IsDisposed && dash.Visible;
             if (Procs.EtwActive || dashOpen) Procs.Sample();
+
+            HistRx[histPos] = CurRx; HistTx[histPos] = CurTx;
+            RecordApps(histPos);
+            histPos = (histPos + 1) % HistRx.Length;
+            Usage.Add(Net.RxDelta, Net.TxDelta);
+            Log.Add(Net.RxDelta, Net.TxDelta, CurRx, CurTx);
 
             // floating meter + fullscreen auto-hide
             bool fs = S.HideOnFullscreen && IsFullscreenAppRunning();
@@ -372,6 +465,65 @@ namespace NetSpeedBoss
             }
         }
 
+        // Elevated autostart: a scheduled task with "highest privileges" starts us as administrator at sign-in
+        // without a UAC prompt (the Run key cannot do that). Creating/removing it requires being elevated.
+        const string TaskName = "NetSpeedBoss";
+        bool? elevatedStartupCache;
+
+        static int RunSchtasks(string args)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("schtasks.exe", args);
+                psi.CreateNoWindow = true; psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true; psi.RedirectStandardError = true;
+                using (Process p = Process.Start(psi))
+                {
+                    p.StandardOutput.ReadToEnd(); p.StandardError.ReadToEnd();
+                    p.WaitForExit(10000);
+                    return p.ExitCode;
+                }
+            }
+            catch { return -1; }
+        }
+
+        public bool ElevatedStartupEnabled
+        {
+            get
+            {
+                if (!elevatedStartupCache.HasValue) elevatedStartupCache = RunSchtasks("/Query /TN " + TaskName) == 0;
+                return elevatedStartupCache.Value;
+            }
+        }
+
+        public bool SetElevatedStartup(bool on)
+        {
+            elevatedStartupCache = null;
+            if (!on) return RunSchtasks("/Delete /TN " + TaskName + " /F") == 0;
+            if (!IsAdmin) return false;
+            string user = System.Security.SecurityElement.Escape(WindowsIdentity.GetCurrent().Name);
+            string exe = System.Security.SecurityElement.Escape(Application.ExecutablePath);
+            string xml =
+"<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n" +
+"<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n" +
+"  <RegistrationInfo><Description>Starts NetSpeed Boss with administrator rights so per-app speeds work.</Description></RegistrationInfo>\r\n" +
+"  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>" + user + "</UserId><Delay>PT5S</Delay></LogonTrigger></Triggers>\r\n" +
+"  <Principals><Principal id=\"Author\"><UserId>" + user + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>\r\n" +
+"  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" +
+"<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>7</Priority></Settings>\r\n" +
+"  <Actions Context=\"Author\"><Exec><Command>" + exe + "</Command><Arguments>--startup</Arguments></Exec></Actions>\r\n" +
+"</Task>\r\n";
+            string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "NetSpeedBoss-task.xml");
+            try
+            {
+                System.IO.File.WriteAllText(path, xml, System.Text.Encoding.Unicode);
+                bool ok = RunSchtasks("/Create /TN " + TaskName + " /XML \"" + path + "\" /F") == 0;
+                if (ok && StartupEnabled) StartupEnabled = false;   // avoid a second, non-elevated launch
+                return ok;
+            }
+            finally { try { System.IO.File.Delete(path); } catch { } }
+        }
+
         public void RestartElevated()
         {
             S.Save(); Usage.Save();
@@ -393,7 +545,9 @@ namespace NetSpeedBoss
             shutDown = true;
             timer.Stop();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            SystemEvents.SessionEnding -= OnSessionEnding;
             Procs.Dispose();
+            Log.Flush();
             Usage.Save();
             S.Save();
             tray.Visible = false;

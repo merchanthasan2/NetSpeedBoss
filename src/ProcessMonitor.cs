@@ -21,6 +21,7 @@ namespace NetSpeedBoss
         public string Name, Path;
         public double Rx, Tx;
         public long TotIn, TotOut;
+        public long LastIn, LastOut;      // bytes moved during the most recent sample
         public List<EpView> Eps = new List<EpView>();
     }
 
@@ -43,7 +44,7 @@ namespace NetSpeedBoss
         {
             public int Pid, Conns;
             public string Name, Path;
-            public long PendIn, PendOut, TotIn, TotOut;
+            public long PendIn, PendOut, TotIn, TotOut, LastIn, LastOut;
             public double Rx, Tx;
             public Dictionary<string, Ep> Eps = new Dictionary<string, Ep>();
         }
@@ -351,6 +352,7 @@ namespace NetSpeedBoss
                 {
                     p.Rx = p.PendIn / dt; p.Tx = p.PendOut / dt;
                     p.TotIn += p.PendIn; p.TotOut += p.PendOut;
+                    p.LastIn = p.PendIn; p.LastOut = p.PendOut;
                     p.PendIn = p.PendOut = 0; p.Conns = 0;
                     foreach (Ep e in p.Eps.Values)
                     {
@@ -412,6 +414,7 @@ namespace NetSpeedBoss
                     ProcView v = new ProcView();
                     v.Pid = p.Pid; v.Name = p.Name ?? ("PID " + p.Pid); v.Path = p.Path;
                     v.Rx = p.Rx; v.Tx = p.Tx; v.TotIn = p.TotIn; v.TotOut = p.TotOut; v.Conns = p.Conns;
+                    v.LastIn = p.LastIn; v.LastOut = p.LastOut;
                     foreach (Ep e in p.Eps.Values)
                     {
                         EpView ev = new EpView();
