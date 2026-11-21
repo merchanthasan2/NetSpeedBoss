@@ -46,6 +46,7 @@ namespace NetSpeedBoss
             IntPtr forceHandle = invoker.Handle;
 
             BuildMenu();
+            if (S.ShowMeter && S.ShowOnTaskbar) { S.ShowMeter = false; S.Save(); }   // only one speed display at a time
             meter = new FloatingMeter(this);
             if (S.ShowMeter) meter.Show();
             taskbarMeter = new TaskbarMeter(this);
@@ -53,8 +54,7 @@ namespace NetSpeedBoss
 
             tray.Text = AppName;
             tray.ContextMenuStrip = Menu;
-            tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ToggleMeter(); };
-            tray.MouseDoubleClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowDashboard(0); };
+            tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowDashboard(0); };
             UpdateTrayIcon(false, false);
             tray.Visible = true;
 
@@ -232,8 +232,8 @@ namespace NetSpeedBoss
             Menu.Items.Add(Item("Data usage", false, delegate { ShowDashboard(2); }));
             Menu.Items.Add(new ToolStripSeparator());
             Menu.Items.Add(Item("Show speed on taskbar", S.ShowOnTaskbar, delegate { ToggleTaskbar(); }));
+            Menu.Items.Add(Item("Show speed in a floating window instead", S.ShowMeter, delegate { ToggleMeter(); }));
             Menu.Items.Add(Item("Bold taskbar text", S.TaskbarBold, delegate { S.TaskbarBold = !S.TaskbarBold; Changed(); }));
-            Menu.Items.Add(Item("Show floating meter", S.ShowMeter, delegate { ToggleMeter(); }));
 
             ToolStripMenuItem units = new ToolStripMenuItem("Units");
             units.DropDownItems.Add(Item("Bytes  (KB/s, MB/s)", S.Unit == SpeedUnit.Bytes, delegate { S.Unit = SpeedUnit.Bytes; Changed(); }));
@@ -307,8 +307,14 @@ namespace NetSpeedBoss
         {
             S.ShowMeter = !S.ShowMeter;
             hiddenForFullscreen = false;
-            if (S.ShowMeter) { meter.ApplySettings(); meter.Show(); } else meter.Hide();
+            if (S.ShowMeter)
+            {
+                if (S.ShowOnTaskbar) { S.ShowOnTaskbar = false; taskbarMeter.Hide(); }
+                meter.ApplySettings(); meter.Show();
+            }
+            else meter.Hide();
             S.Save();
+            if (dash != null && !dash.IsDisposed) dash.SettingsChanged();
         }
 
         public void SetTimerInterval(int ms) { S.IntervalMs = ms; timer.Interval = ms; }
@@ -316,7 +322,11 @@ namespace NetSpeedBoss
         public void ToggleTaskbar()
         {
             S.ShowOnTaskbar = !S.ShowOnTaskbar;
-            if (S.ShowOnTaskbar) { taskbarMeter.ApplySettings(); taskbarMeter.Show(); taskbarMeter.Tick(CurRx, CurTx, false); }
+            if (S.ShowOnTaskbar)
+            {
+                if (S.ShowMeter) { S.ShowMeter = false; meter.Hide(); hiddenForFullscreen = false; }
+                taskbarMeter.ApplySettings(); taskbarMeter.Show(); taskbarMeter.Tick(CurRx, CurTx, false);
+            }
             else taskbarMeter.Hide();
             S.Save();
             if (dash != null && !dash.IsDisposed) dash.SettingsChanged();
