@@ -27,7 +27,7 @@
 
 **Option 1: winget** (recommended)
 ```powershell
-winget install merchanthasan2.NetSpeedBoss
+winget install Net.NetSpeedBoss
 ```
 
 **Option 2: installer.** Download [`NetSpeedBoss-Setup.exe`](https://github.com/merchanthasan2/NetSpeedBoss/releases/latest/download/NetSpeedBoss-Setup.exe) and run it.
@@ -82,8 +82,8 @@ Settings are in `%APPDATA%\NetSpeedBoss\settings.ini`, with an `error.log` there
 
 <details><summary><b>How do I update or uninstall?</b></summary>
 
-`winget upgrade merchanthasan2.NetSpeedBoss` or run a newer installer.
-Uninstall from **Settings → Apps → NetSpeed Boss**, or `winget uninstall merchanthasan2.NetSpeedBoss`.
+`winget upgrade Net.NetSpeedBoss` or run a newer installer.
+Uninstall from **Settings → Apps → NetSpeed Boss**, or `winget uninstall Net.NetSpeedBoss`.
 </details>
 
 <details><summary><b>The meter disappeared</b></summary>

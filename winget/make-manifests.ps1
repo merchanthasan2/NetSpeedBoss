@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)] [string]$Version,
     [Parameter(Mandatory)] [string]$Installer,
     [string]$OutDir = 'dist\winget',
-    [string]$Id = 'merchanthasan2.NetSpeedBoss',
+    [string]$Id = 'Net.NetSpeedBoss',
     [string]$Repo = 'merchanthasan2/NetSpeedBoss'
 )
 $ErrorActionPreference = 'Stop'
