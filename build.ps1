@@ -10,54 +10,9 @@ $csc  = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if (-not (Test-Path $csc)) { throw "csc.exe not found at $csc" }
 New-Item -ItemType Directory -Force $out | Out-Null
 
-# ---- generate the application icon (multi-size PNG .ico) ----
+# ---- application icon (regenerate with tools\make-icon.ps1) ----
 $ico = Join-Path $src 'app.ico'
-if (-not (Test-Path $ico)) {
-    Add-Type -AssemblyName System.Drawing
-    $sizes = 16, 24, 32, 48, 64, 128, 256
-    $pngs = @()
-    foreach ($s in $sizes) {
-        $bmp = New-Object System.Drawing.Bitmap $s, $s
-        $g = [System.Drawing.Graphics]::FromImage($bmp)
-        $g.SmoothingMode = 'AntiAlias'
-        $r = [single]($s * 0.22)
-        $path = New-Object System.Drawing.Drawing2D.GraphicsPath
-        $d = [single]($s - 1)
-        $path.AddArc(0, 0, $r * 2, $r * 2, 180, 90); $path.AddArc($d - $r * 2, 0, $r * 2, $r * 2, 270, 90)
-        $path.AddArc($d - $r * 2, $d - $r * 2, $r * 2, $r * 2, 0, 90); $path.AddArc(0, $d - $r * 2, $r * 2, $r * 2, 90, 90)
-        $path.CloseFigure()
-        $bg = New-Object System.Drawing.Drawing2D.LinearGradientBrush (New-Object System.Drawing.Point 0, 0), (New-Object System.Drawing.Point $s, $s), ([System.Drawing.Color]::FromArgb(255, 30, 36, 48)), ([System.Drawing.Color]::FromArgb(255, 14, 16, 22))
-        $g.FillPath($bg, $path)
-        $green = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 70, 215, 120))
-        $orange = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 255, 165, 60))
-        $w = [single]$s
-        # down arrow
-        $g.FillRectangle($green, $w * 0.24, $w * 0.18, $w * 0.13, $w * 0.38)
-        $g.FillPolygon($green, [System.Drawing.PointF[]]@((New-Object System.Drawing.PointF ($w * 0.12), ($w * 0.52)), (New-Object System.Drawing.PointF ($w * 0.49), ($w * 0.52)), (New-Object System.Drawing.PointF ($w * 0.305), ($w * 0.84))))
-        # up arrow
-        $g.FillRectangle($orange, $w * 0.63, $w * 0.44, $w * 0.13, $w * 0.38)
-        $g.FillPolygon($orange, [System.Drawing.PointF[]]@((New-Object System.Drawing.PointF ($w * 0.51), ($w * 0.48)), (New-Object System.Drawing.PointF ($w * 0.88), ($w * 0.48)), (New-Object System.Drawing.PointF ($w * 0.695), ($w * 0.16))))
-        $g.Dispose()
-        $ms = New-Object System.IO.MemoryStream
-        $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-        $pngs += ,($ms.ToArray())
-        $bmp.Dispose()
-    }
-    $fs = [System.IO.File]::Create($ico)
-    $bw = New-Object System.IO.BinaryWriter $fs
-    $bw.Write([UInt16]0); $bw.Write([UInt16]1); $bw.Write([UInt16]$sizes.Count)
-    $offset = 6 + 16 * $sizes.Count
-    for ($i = 0; $i -lt $sizes.Count; $i++) {
-        $s = $sizes[$i]; $dim = if ($s -ge 256) { 0 } else { $s }
-        $bw.Write([byte]$dim); $bw.Write([byte]$dim); $bw.Write([byte]0); $bw.Write([byte]0)
-        $bw.Write([UInt16]1); $bw.Write([UInt16]32)
-        $bw.Write([UInt32]$pngs[$i].Length); $bw.Write([UInt32]$offset)
-        $offset += $pngs[$i].Length
-    }
-    foreach ($p in $pngs) { $bw.Write($p) }
-    $bw.Close()
-    Write-Host "Generated $ico"
-}
+if (-not (Test-Path $ico)) { & (Join-Path $root 'tools\make-icon.ps1') }
 
 $obj = Join-Path $root 'obj'
 New-Item -ItemType Directory -Force $obj | Out-Null

@@ -18,6 +18,7 @@ namespace NetSpeedBoss
         // live
         StatCard cDown, cUp, cPeakDown, cPeakUp, cSession;
         GraphPanel graph;
+        TopAppsPanel topApps;
         ComboBox rangeBox;
         DbListView adapterList;
         DateTime lastAdapterRefresh = DateTime.MinValue;
@@ -43,6 +44,7 @@ namespace NetSpeedBoss
 
         // settings
         bool loadingSettings;
+        CheckBox sElevated;
         CheckBox sTaskbar, sShowMeter, sTop, sLock, sFull, sOneLine, sGraph, sStartup, sClickThrough;
         ComboBox sUnit, sInterval, sAdapter;
         TrackBar sOpacity;
@@ -59,8 +61,9 @@ namespace NetSpeedBoss
             Font = uiFont;
             BackColor = Theme.Bg;
             StartPosition = FormStartPosition.CenterScreen;
-            Size = new Size(Math.Max(760, app.S.DashW), Math.Max(520, app.S.DashH));
-            MinimumSize = new Size(720, 480);
+            Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            Size = new Size(Math.Min(wa.Width, Math.Max(900, app.S.DashW)), Math.Min(wa.Height, Math.Max(760, app.S.DashH)));
+            MinimumSize = new Size(760, 620);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             icons.ColorDepth = ColorDepth.Depth32Bit;
             icons.ImageSize = new Size(16, 16);
@@ -138,12 +141,19 @@ namespace NetSpeedBoss
             Col(adapterList, "Sent (since boot)", 115, HorizontalAlignment.Right);
             Col(adapterList, "Measured", 70, HorizontalAlignment.Center);
 
-            Panel adapterHost = new Panel(); adapterHost.Dock = DockStyle.Bottom; adapterHost.Height = 160; adapterHost.Padding = new Padding(6);
+            Panel appsHost = new Panel(); appsHost.Dock = DockStyle.Bottom; appsHost.Padding = new Padding(6, 0, 6, 6);
+            appsHost.Height = TopAppsPanel.PreferredHeight + 6;
+            topApps = new TopAppsPanel(); topApps.App = app; topApps.Dock = DockStyle.Fill;
+            topApps.IconFor = delegate(string path) { int i = IconFor(path); return i >= 0 ? icons.Images[i] : null; };
+            appsHost.Controls.Add(topApps);
+
+            Panel adapterHost = new Panel(); adapterHost.Dock = DockStyle.Bottom; adapterHost.Height = 130; adapterHost.Padding = new Padding(6);
             Label al = new Label(); al.Text = "Network adapters"; al.Font = new Font("Segoe UI Semibold", 9.5f); al.Dock = DockStyle.Top; al.Height = 22;
             adapterHost.Controls.Add(adapterList); adapterHost.Controls.Add(al);
             adapterList.Dock = DockStyle.Fill;
 
             p.Controls.Add(graphHost);
+            p.Controls.Add(appsHost);
             p.Controls.Add(adapterHost);
             p.Controls.Add(cards);
             return p;
@@ -162,6 +172,7 @@ namespace NetSpeedBoss
             cSession.Set(Fmt.Size(app.SessionRx + app.SessionTx),
                 "↓ " + Fmt.Size(app.SessionRx) + "  ↑ " + Fmt.Size(app.SessionTx));
             graph.Invalidate();
+            topApps.RefreshRows();
 
             if ((DateTime.UtcNow - lastAdapterRefresh).TotalSeconds >= 3)
             {
@@ -466,8 +477,164 @@ namespace NetSpeedBoss
             btns.Controls.Add(reset); btns.Controls.Add(export);
             listHost.Controls.Add(usageList); listHost.Controls.Add(btns);
 
-            p.Controls.Add(chartHost); p.Controls.Add(listHost); p.Controls.Add(limitPanel); p.Controls.Add(cards);
+            listHost.Height = 170;
+            p.Controls.Add(chartHost); p.Controls.Add(listHost); p.Controls.Add(BuildRangePanel()); p.Controls.Add(limitPanel); p.Controls.Add(cards);
             return p;
+        }
+
+        // ----- date range report -----
+        DateTimePicker rFrom, rTo;
+        Label rSummary, rApps;
+        bool rangeLoading;
+
+        Control BuildRangePanel()
+        {
+            Panel host = new Panel(); host.Dock = DockStyle.Top; host.Height = 142; host.Padding = new Padding(6, 4, 6, 6);
+            Panel card = new Panel(); card.Dock = DockStyle.Fill; card.BackColor = Theme.Card; card.Padding = new Padding(10, 6, 10, 6);
+
+            FlowLayoutPanel row = new FlowLayoutPanel(); row.Dock = DockStyle.Top; row.Height = 62; row.WrapContents = true;
+            Label t = new Label(); t.Text = "Date range"; t.Font = new Font("Segoe UI Semibold", 9.5f); t.AutoSize = true; t.Margin = new Padding(0, 7, 12, 0);
+            Label lf = new Label(); lf.Text = "From"; lf.AutoSize = true; lf.Margin = new Padding(0, 7, 4, 0);
+            rFrom = new DateTimePicker(); rFrom.Format = DateTimePickerFormat.Short; rFrom.Width = 110; rFrom.Margin = new Padding(0, 3, 10, 0);
+            Label lt = new Label(); lt.Text = "to"; lt.AutoSize = true; lt.Margin = new Padding(0, 7, 4, 0);
+            rTo = new DateTimePicker(); rTo.Format = DateTimePickerFormat.Short; rTo.Width = 110; rTo.Margin = new Padding(0, 3, 14, 0);
+            rFrom.ValueChanged += delegate { if (!rangeLoading) UpdateRange(); };
+            rTo.ValueChanged += delegate { if (!rangeLoading) UpdateRange(); };
+            row.Controls.AddRange(new Control[] { t, lf, rFrom, lt, rTo });
+
+            DateTime today = DateTime.Today;
+            DateTime monthStart = new DateTime(today.Year, today.Month, 1);
+            AddPreset(row, "Today", today, today);
+            AddPreset(row, "7 days", today.AddDays(-6), today);
+            AddPreset(row, "30 days", today.AddDays(-29), today);
+            AddPreset(row, "This month", monthStart, today);
+            AddPreset(row, "Last month", monthStart.AddMonths(-1), monthStart.AddDays(-1));
+
+            Button exp = new Button(); exp.Text = "Export range..."; exp.AutoSize = true; exp.Margin = new Padding(10, 2, 4, 0);
+            exp.Click += delegate { ExportRange(); };
+            Button logs = new Button(); logs.Text = "Open log folder"; logs.AutoSize = true; logs.Margin = new Padding(4, 2, 0, 0);
+            logs.Click += delegate { OpenLogFolder(); };
+            row.Controls.Add(exp); row.Controls.Add(logs);
+
+            rSummary = new Label(); rSummary.Dock = DockStyle.Top; rSummary.Height = 26; rSummary.TextAlign = ContentAlignment.MiddleLeft;
+            rSummary.Font = new Font("Segoe UI Semibold", 9.5f); rSummary.ForeColor = Theme.Ink; rSummary.AutoEllipsis = true;
+            rApps = new Label(); rApps.Dock = DockStyle.Top; rApps.Height = 22; rApps.TextAlign = ContentAlignment.MiddleLeft;
+            rApps.ForeColor = Theme.Muted; rApps.AutoEllipsis = true;
+
+            card.Controls.Add(rApps); card.Controls.Add(rSummary); card.Controls.Add(row);
+            host.Controls.Add(card);
+
+            rangeLoading = true;
+            rFrom.Value = monthStart; rTo.Value = today;
+            rangeLoading = false;
+            return host;
+        }
+
+        void AddPreset(FlowLayoutPanel row, string text, DateTime from, DateTime to)
+        {
+            LinkLabel l = new LinkLabel(); l.Text = text; l.AutoSize = true; l.Margin = new Padding(0, 7, 8, 0);
+            l.LinkColor = Theme.Accent; l.ActiveLinkColor = Theme.Accent; l.LinkBehavior = LinkBehavior.HoverUnderline;
+            l.LinkClicked += delegate
+            {
+                rangeLoading = true; rFrom.Value = from; rTo.Value = to; rangeLoading = false;
+                UpdateRange();
+            };
+            row.Controls.Add(l);
+        }
+
+        void RangeDates(out DateTime from, out DateTime to)
+        {
+            from = rFrom.Value.Date; to = rTo.Value.Date;
+            if (to < from) { DateTime x = from; from = to; to = x; }
+        }
+
+        void UpdateRange()
+        {
+            DateTime from, to;
+            RangeDates(out from, out to);
+            UsageStore u = app.Usage;
+            long[] tot = u.Range(from, to);
+            int days = (int)(to - from).TotalDays + 1;
+            DateTime busiest = from; long busiestV = -1;
+            for (DateTime d = from; d <= to; d = d.AddDays(1))
+            {
+                long[] v = u.Day(d);
+                if (v[0] + v[1] > busiestV) { busiestV = v[0] + v[1]; busiest = d; }
+            }
+            string span = from == to ? from.ToString("ddd d MMM yyyy") : from.ToString("d MMM yyyy") + " – " + to.ToString("d MMM yyyy");
+            rSummary.Text = span + "  (" + days + (days == 1 ? " day" : " days") + "):   ↓ " + Fmt.Size(tot[0]) + "   ↑ " + Fmt.Size(tot[1]) +
+                "   = " + Fmt.Size(tot[0] + tot[1]) +
+                (days > 1 ? "   ·  avg " + Fmt.Size((tot[0] + tot[1]) / (double)days) + "/day" +
+                            (busiestV > 0 ? "   ·  busiest " + busiest.ToString("ddd d MMM") + " (" + Fmt.Size(busiestV) + ")" : "") : "");
+
+            Dictionary<string, long[]> apps = app.Log.AppTotals(from, to);
+            if (apps.Count == 0)
+                rApps.Text = app.Procs.EtwActive ? "Top apps: no per-app data recorded for these dates yet."
+                                                 : "Top apps: per-app usage is recorded while NetSpeed Boss runs as administrator.";
+            else
+            {
+                List<KeyValuePair<string, long[]>> l = new List<KeyValuePair<string, long[]>>(apps);
+                l.Sort(delegate(KeyValuePair<string, long[]> a, KeyValuePair<string, long[]> b)
+                { return (b.Value[0] + b.Value[1]).CompareTo(a.Value[0] + a.Value[1]); });
+                System.Text.StringBuilder sb = new System.Text.StringBuilder("Top apps:  ");
+                for (int i = 0; i < Math.Min(6, l.Count); i++)
+                {
+                    if (i > 0) sb.Append("   ·  ");
+                    sb.Append(l[i].Key).Append(' ').Append(Fmt.Size(l[i].Value[0] + l[i].Value[1]));
+                }
+                rApps.Text = sb.ToString();
+            }
+        }
+
+        void ExportRange()
+        {
+            DateTime from, to;
+            RangeDates(out from, out to);
+            using (SaveFileDialog d = new SaveFileDialog())
+            {
+                d.Filter = "CSV files|*.csv";
+                d.InitialDirectory = Settings.LogDir;
+                d.FileName = "usage-" + from.ToString("yyyy-MM-dd") + "-to-" + to.ToString("yyyy-MM-dd") + ".csv";
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    System.Globalization.CultureInfo inv = System.Globalization.CultureInfo.InvariantCulture;
+                    System.Text.StringBuilder sb = new System.Text.StringBuilder("Date,Downloaded bytes,Uploaded bytes,Total bytes,Downloaded MB,Uploaded MB,Total MB\r\n");
+                    long[] sum = new long[2];
+                    for (DateTime day = from; day <= to; day = day.AddDays(1))
+                    {
+                        long[] v = app.Usage.Day(day);
+                        sum[0] += v[0]; sum[1] += v[1];
+                        sb.AppendFormat(inv, "{0:yyyy-MM-dd},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00}\r\n", day, v[0], v[1], v[0] + v[1], v[0] / 1048576.0, v[1] / 1048576.0, (v[0] + v[1]) / 1048576.0);
+                    }
+                    sb.AppendFormat(inv, "TOTAL,{0},{1},{2},{3:0.00},{4:0.00},{5:0.00}\r\n", sum[0], sum[1], sum[0] + sum[1], sum[0] / 1048576.0, sum[1] / 1048576.0, (sum[0] + sum[1]) / 1048576.0);
+                    Dictionary<string, long[]> apps = app.Log.AppTotals(from, to);
+                    if (apps.Count > 0)
+                    {
+                        sb.Append("\r\nApp,Downloaded bytes,Uploaded bytes,Total bytes,Downloaded MB,Uploaded MB,Total MB\r\n");
+                        List<KeyValuePair<string, long[]>> l = new List<KeyValuePair<string, long[]>>(apps);
+                        l.Sort(delegate(KeyValuePair<string, long[]> a, KeyValuePair<string, long[]> b)
+                        { return (b.Value[0] + b.Value[1]).CompareTo(a.Value[0] + a.Value[1]); });
+                        foreach (KeyValuePair<string, long[]> kv in l)
+                            sb.AppendFormat(inv, "{0},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00}\r\n", kv.Key, kv.Value[0], kv.Value[1], kv.Value[0] + kv.Value[1],
+                                kv.Value[0] / 1048576.0, kv.Value[1] / 1048576.0, (kv.Value[0] + kv.Value[1]) / 1048576.0);
+                    }
+                    File.WriteAllText(d.FileName, sb.ToString(), System.Text.Encoding.UTF8);
+                }
+                catch (Exception ex) { MessageBox.Show(ex.Message, TrayApp.AppName); }
+            }
+        }
+
+        void OpenLogFolder()
+        {
+            try
+            {
+                app.Log.Flush(); app.Usage.Save();
+                Directory.CreateDirectory(Settings.LogDir);
+                UsageLog.WriteReadme();
+                Process.Start("explorer.exe", "\"" + Settings.LogDir + "\"");
+            }
+            catch (Exception ex) { MessageBox.Show(ex.Message, TrayApp.AppName); }
         }
 
         static void SetUsageCard(StatCard c, long[] v)
@@ -503,6 +670,7 @@ namespace NetSpeedBoss
             if ((DateTime.UtcNow - lastUsageRefresh).TotalSeconds >= 5)
             {
                 lastUsageRefresh = DateTime.UtcNow;
+                UpdateRange();
                 usageList.BeginUpdate();
                 usageList.Items.Clear();
                 foreach (KeyValuePair<DateTime, long[]> kv in u.All())
@@ -607,8 +775,29 @@ namespace NetSpeedBoss
             sStartup = new CheckBox(); sStartup.Text = "Start with Windows"; sStartup.AutoSize = true;
             sStartup.CheckedChanged += delegate { if (!loadingSettings) app.StartupEnabled = sStartup.Checked; };
             row("", sStartup);
+            sElevated = new CheckBox(); sElevated.AutoSize = true;
+            sElevated.Text = "Start with administrator rights at sign-in (per-app speeds, no prompt)";
+            sElevated.Enabled = app.IsAdmin || app.ElevatedStartupEnabled;
+            sElevated.CheckedChanged += delegate
+            {
+                if (loadingSettings) return;
+                if (!app.SetElevatedStartup(sElevated.Checked))
+                    MessageBox.Show(sElevated.Checked ? "Could not create the sign-in task. Restart NetSpeed Boss as administrator and try again."
+                                                      : "Could not remove the sign-in task (administrator rights may be required).", TrayApp.AppName);
+                LoadSettingsIntoUi();
+            };
+            row("", sElevated);
+            if (!app.IsAdmin)
+            {
+                Label eh = new Label(); eh.AutoSize = true; eh.ForeColor = Theme.Muted; eh.Margin = new Padding(18, 0, 0, 4);
+                eh.Text = "Restart as administrator once to turn this on.";
+                row("", eh);
+            }
             FlowLayoutPanel sys = new FlowLayoutPanel(); sys.AutoSize = true; sys.WrapContents = false;
-            Button folder = new Button(); folder.Text = "Open data folder"; folder.AutoSize = true;
+            Button logsBtn = new Button(); logsBtn.Text = "Open usage logs (Documents)"; logsBtn.AutoSize = true;
+            logsBtn.Click += delegate { OpenLogFolder(); };
+            sys.Controls.Add(logsBtn);
+            Button folder = new Button(); folder.Text = "Open settings folder"; folder.AutoSize = true;
             folder.Click += delegate { Directory.CreateDirectory(Settings.Dir); Process.Start("explorer.exe", "\"" + Settings.Dir + "\""); };
             sys.Controls.Add(folder);
             if (!app.IsAdmin)
@@ -619,7 +808,7 @@ namespace NetSpeedBoss
             row("", sys);
             Label about = new Label(); about.AutoSize = true; about.ForeColor = Theme.Muted; about.Margin = new Padding(0, 16, 0, 10);
             about.Text = TrayApp.AppName + " " + Application.ProductVersion + (app.IsAdmin ? "  ·  running as administrator" : "") +
-                         "\nSettings and usage history are stored in " + Settings.Dir;
+                         "\nUsage logs: " + Settings.LogDir + "\nSettings: " + Settings.Dir;
             t.Controls.Add(about); t.SetColumnSpan(about, 2);
 
             p.Controls.Add(t);
@@ -699,6 +888,7 @@ namespace NetSpeedBoss
             sLimit.Value = (decimal)Math.Max(0, Math.Min(100000, s.MonthlyLimitGB));
             sStartDay.Value = s.MonthStartDay;
             sStartup.Checked = app.StartupEnabled;
+            sElevated.Checked = app.ElevatedStartupEnabled;
             foreach (Button b in new Button[] { bDown, bUp, bBack, bText, bTbText })
             {
                 Image old = b.Image;

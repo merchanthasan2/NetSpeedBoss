@@ -23,7 +23,9 @@ namespace NetSpeedBoss
                 }
                 if (!acquired)
                 {
-                    try { EventWaitHandle.OpenExisting("NetSpeedBoss_ShowDashboard").Set(); } catch { }
+                    // a sign-in launch that finds us already running stays quiet; a manual launch opens the dashboard
+                    if (Array.IndexOf(args, "--startup") < 0)
+                        try { EventWaitHandle.OpenExisting("NetSpeedBoss_ShowDashboard").Set(); } catch { }
                     return;
                 }
             }

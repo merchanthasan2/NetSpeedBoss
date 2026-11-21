@@ -73,6 +73,12 @@ namespace NetSpeedBoss
             double max = 0;
             for (int i = 0; i < n; i++) max = Math.Max(max, Math.Max(App.Hist(App.HistRx, i), App.Hist(App.HistTx, i)));
             max = NiceMax(Math.Max(max, 10 * 1024), s.Unit);
+            List<KeyValuePair<TrayApp.GraphApp, double[]>> apps = new List<KeyValuePair<TrayApp.GraphApp, double[]>>();
+            foreach (TrayApp.GraphApp ga in App.GraphApps)
+            {
+                double[] h;
+                if (App.AppHistRx.TryGetValue(ga.Name, out h)) apps.Add(new KeyValuePair<TrayApp.GraphApp, double[]>(ga, h));
+            }
 
             using (Pen grid = new Pen(Color.FromArgb(234, 236, 240)))
             {
@@ -96,12 +102,19 @@ namespace NetSpeedBoss
             g.SmoothingMode = SmoothingMode.AntiAlias;
             DrawSeries(g, plot, App.HistRx, n, max, s.DownColor);
             DrawSeries(g, plot, App.HistTx, n, max, s.UpColor);
+            foreach (KeyValuePair<TrayApp.GraphApp, double[]> kv in apps) DrawLine(g, plot, kv.Value, n, max, kv.Key.Color);
             g.SmoothingMode = SmoothingMode.None;
 
             // legend
             int lx = plot.Left;
             lx = Legend(g, lx, "Download  " + Fmt.Speed(App.CurRx, s.Unit), s.DownColor);
-            Legend(g, lx + 18, "Upload  " + Fmt.Speed(App.CurTx, s.Unit), s.UpColor);
+            lx = Legend(g, lx + 18, "Upload  " + Fmt.Speed(App.CurTx, s.Unit), s.UpColor);
+            foreach (KeyValuePair<TrayApp.GraphApp, double[]> kv in apps)
+            {
+                string t = kv.Key.Name + "  " + Fmt.Speed(App.Hist(kv.Value, 0), s.Unit);
+                if (lx + 36 + TextRenderer.MeasureText(t, Font).Width > Width - 130) break;   // keep clear of the range picker
+                lx = Legend(g, lx + 18, t, kv.Key.Color);
+            }
 
             // hover read-out
             if (hoverX >= plot.Left && hoverX <= plot.Right)
@@ -114,12 +127,26 @@ namespace NetSpeedBoss
                     g.DrawLine(p, x, plot.Top, x, plot.Bottom);
                 string txt = "↓ " + Fmt.Speed(App.Hist(App.HistRx, ago), s.Unit) + "   ↑ " + Fmt.Speed(App.Hist(App.HistTx, ago), s.Unit) +
                              "   (" + (ago * s.IntervalMs / 1000.0).ToString("0.#") + "s ago)";
+                foreach (KeyValuePair<TrayApp.GraphApp, double[]> kv in apps)
+                    txt += "\n" + kv.Key.Name + "  ↓ " + Fmt.Speed(App.Hist(kv.Value, ago), s.Unit);
                 Size ts = TextRenderer.MeasureText(txt, Font);
                 int bx = (int)Math.Min(x + 8, plot.Right - ts.Width - 8);
                 Rectangle box = new Rectangle(bx, plot.Top + 6, ts.Width + 8, ts.Height + 6);
                 using (SolidBrush b = new SolidBrush(Color.FromArgb(235, 33, 37, 43))) g.FillRectangle(b, box);
                 TextRenderer.DrawText(g, txt, Font, box, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             }
+        }
+
+        void DrawLine(Graphics g, Rectangle plot, double[] h, int n, double max, Color c)
+        {
+            PointF[] line = new PointF[n];
+            float step = plot.Width / (float)(n - 1);
+            for (int i = 0; i < n; i++)
+            {
+                double v = Math.Min(max, App.Hist(h, n - 1 - i));
+                line[i] = new PointF(plot.Left + i * step, (float)(plot.Bottom - v / max * plot.Height));
+            }
+            using (Pen p = new Pen(c, 2f)) g.DrawLines(p, line);
         }
 
         int Legend(Graphics g, int x, string text, Color c)
@@ -147,6 +174,165 @@ namespace NetSpeedBoss
             using (SolidBrush b = new SolidBrush(Color.FromArgb(40, c))) g.FillPolygon(b, fill);
             using (Pen p = new Pen(c, 1.8f)) g.DrawLines(p, line);
         }
+    }
+
+    /// <summary>Top 5 downloading apps with tick boxes that add each app's line to the speed graph.</summary>
+    public class TopAppsPanel : Control
+    {
+        public TrayApp App;
+        public Func<string, Image> IconFor;
+        readonly List<TrayApp.AppSeries> rows = new List<TrayApp.AppSeries>();
+        Rectangle linkRect = Rectangle.Empty;
+        int hover = -1;
+        const int Head = 30, RowH = 26, Max = 5;
+        readonly Font bold = new Font("Segoe UI Semibold", 9.5f);
+        string flash;
+        DateTime flashUntil;
+
+        public TopAppsPanel()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            BackColor = Theme.Card;
+            Font = new Font("Segoe UI", 9f);
+        }
+
+        public static int PreferredHeight { get { return Head + RowH * Max + 8; } }
+
+        /// <summary>Re-rank: top apps by 5-second average download, plus any app already on the graph.</summary>
+        public void RefreshRows()
+        {
+            rows.Clear();
+            if (App == null || !App.Procs.EtwActive) { Invalidate(); return; }
+            List<TrayApp.AppSeries> all = new List<TrayApp.AppSeries>(App.AppNow);
+            Dictionary<string, double> score = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            foreach (TrayApp.AppSeries a in all) score[a.Name] = App.AppAvgRx(a.Name, 5);
+            all.Sort(delegate(TrayApp.AppSeries a, TrayApp.AppSeries b)
+            {
+                int r = score[b.Name].CompareTo(score[a.Name]);
+                return r != 0 ? r : b.TotIn.CompareTo(a.TotIn);
+            });
+            // graphed apps keep their row so their tick box never disappears
+            foreach (TrayApp.AppSeries a in all) if (App.IsGraphed(a.Name)) rows.Add(a);
+            foreach (TrayApp.AppSeries a in all)
+            {
+                if (rows.Count >= Max) break;
+                if (App.IsGraphed(a.Name) || (score[a.Name] <= 0 && a.TotIn == 0)) continue;
+                rows.Add(a);
+            }
+            rows.Sort(delegate(TrayApp.AppSeries a, TrayApp.AppSeries b)
+            {
+                int r = score[b.Name].CompareTo(score[a.Name]);
+                return r != 0 ? r : b.TotIn.CompareTo(a.TotIn);
+            });
+            Invalidate();
+        }
+
+        Rectangle RowRect(int i) { return new Rectangle(0, Head + i * RowH, Width, RowH); }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            int h = -1;
+            for (int i = 0; i < rows.Count; i++) if (RowRect(i).Contains(e.Location)) { h = i; break; }
+            bool overLink = linkRect.Contains(e.Location);
+            Cursor = h >= 0 || overLink ? Cursors.Hand : Cursors.Default;
+            if (h != hover) { hover = h; Invalidate(); }
+            base.OnMouseMove(e);
+        }
+        protected override void OnMouseLeave(EventArgs e) { hover = -1; Invalidate(); base.OnMouseLeave(e); }
+
+        protected override void OnMouseClick(MouseEventArgs e)
+        {
+            base.OnMouseClick(e);
+            if (e.Button != MouseButtons.Left || App == null) return;
+            if (linkRect.Contains(e.Location)) { App.RestartElevated(); return; }
+            for (int i = 0; i < rows.Count; i++)
+                if (RowRect(i).Contains(e.Location))
+                {
+                    if (!App.ToggleGraphApp(rows[i].Name)) { flash = "Up to 5 apps can be on the graph at once"; flashUntil = DateTime.UtcNow.AddSeconds(3); }
+                    Invalidate();
+                    Control p = Parent;
+                    while (p != null) { foreach (Control c in p.Controls) if (c is GraphPanel) c.Invalidate(); p = p.Parent; }
+                    return;
+                }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(BackColor);
+            if (App == null) return;
+            Settings s = App.S;
+            TextRenderer.DrawText(g, "Top downloading apps", bold, new Rectangle(8, 0, Width, Head), Theme.Ink,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+            string hint = flash != null && DateTime.UtcNow < flashUntil ? flash : "Tick an app to see it on the graph";
+            TextRenderer.DrawText(g, hint, Font, new Rectangle(0, 0, Width - 10, Head), Theme.Muted,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Right);
+            linkRect = Rectangle.Empty;
+
+            if (!App.Procs.EtwActive)
+            {
+                Rectangle box = new Rectangle(8, Head + 6, Width - 16, Height - Head - 14);
+                TextRenderer.DrawText(g, "Windows only shares per-app speeds with apps running as administrator.", Font,
+                    new Point(box.Left + 2, box.Top + 8), Theme.Muted);
+                string link = "Restart NetSpeed Boss as administrator →";
+                Size ls = TextRenderer.MeasureText(link, bold);
+                linkRect = new Rectangle(box.Left + 2, box.Top + 34, ls.Width, ls.Height);
+                TextRenderer.DrawText(g, link, bold, linkRect.Location, Theme.Accent);
+                TextRenderer.DrawText(g, "Tip: Settings → \"Start with administrator rights\" skips this prompt at every sign-in.", Font,
+                    new Point(box.Left + 2, box.Top + 62), Theme.Muted);
+                return;
+            }
+            if (rows.Count == 0)
+            {
+                TextRenderer.DrawText(g, "No apps are downloading right now.", Font, new Point(10, Head + 10), Theme.Muted);
+                return;
+            }
+
+            double maxRx = 1;
+            foreach (TrayApp.AppSeries a in rows) maxRx = Math.Max(maxRx, a.Rx);
+            int speedW = TextRenderer.MeasureText("▼ 888.8 MB/s", Font).Width + 6;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                TrayApp.AppSeries a = rows[i];
+                Rectangle r = RowRect(i);
+                TrayApp.GraphApp ga = App.FindGraphed(a.Name);
+                if (i == hover) using (SolidBrush hb = new SolidBrush(Color.FromArgb(245, 247, 250))) g.FillRectangle(hb, r);
+
+                int x = 10;
+                CheckBoxRenderer.DrawCheckBox(g, new Point(x, r.Top + (RowH - 13) / 2),
+                    ga != null ? System.Windows.Forms.VisualStyles.CheckBoxState.CheckedNormal : System.Windows.Forms.VisualStyles.CheckBoxState.UncheckedNormal);
+                x += 22;
+                Color c = ga != null ? ga.Color : Color.FromArgb(200, 205, 212);
+                using (SolidBrush cb = new SolidBrush(c)) g.FillRectangle(cb, x, r.Top + RowH / 2 - 2, 12, 4);
+                x += 18;
+                Image ic = IconFor == null ? null : IconFor(a.Path);
+                if (ic != null) g.DrawImage(ic, x, r.Top + (RowH - 16) / 2, 16, 16);
+                x += 22;
+
+                int right = Width - 10;
+                Rectangle upR = new Rectangle(right - speedW, r.Top, speedW, RowH);
+                Rectangle dnR = new Rectangle(upR.Left - speedW, r.Top, speedW, RowH);
+                TextFormatFlags fr = TextFormatFlags.VerticalCenter | TextFormatFlags.Right | TextFormatFlags.SingleLine;
+                TextRenderer.DrawText(g, "▼ " + Fmt.Speed(a.Rx, s.Unit), Font, dnR, a.Rx > 0 ? Theme.Ink : Theme.Muted, fr);
+                TextRenderer.DrawText(g, "▲ " + Fmt.Speed(a.Tx, s.Unit), Font, upR, Theme.Muted, fr);
+
+                int nameW = Math.Min(220, Math.Max(80, dnR.Left - x - 120));
+                TextRenderer.DrawText(g, a.Name, Font, new Rectangle(x, r.Top, nameW, RowH), Theme.Ink,
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+
+                // share-of-download bar
+                int bx = x + nameW + 10, bw = dnR.Left - bx - 14;
+                if (bw > 20)
+                {
+                    using (SolidBrush track = new SolidBrush(Color.FromArgb(238, 240, 243))) g.FillRectangle(track, bx, r.Top + RowH / 2 - 2, bw, 4);
+                    int fw = (int)(bw * Math.Min(1, a.Rx / maxRx));
+                    using (SolidBrush fill = new SolidBrush(ga != null ? ga.Color : s.DownColor)) g.FillRectangle(fill, bx, r.Top + RowH / 2 - 2, fw, 4);
+                }
+            }
+        }
+
+        protected override void Dispose(bool disposing) { if (disposing) bold.Dispose(); base.Dispose(disposing); }
     }
 
     /// <summary>Stacked daily bars (download + upload) for the last N days.</summary>
