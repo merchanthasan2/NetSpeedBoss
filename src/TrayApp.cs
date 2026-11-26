@@ -435,6 +435,7 @@ namespace NetSpeedBoss
             dash.SelectTab(tab);
             if (!dash.Visible) dash.Show();
             if (dash.WindowState == FormWindowState.Minimized) dash.WindowState = FormWindowState.Normal;
+            dash.OnOpened();
             dash.Activate();
             dash.BringToFront();
         }

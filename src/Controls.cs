@@ -335,6 +335,156 @@ namespace NetSpeedBoss
         protected override void Dispose(bool disposing) { if (disposing) bold.Dispose(); base.Dispose(disposing); }
     }
 
+    public class UsageAppRow
+    {
+        public string Name;
+        public long Down, Up;
+        public long Total { get { return Down + Up; } }
+    }
+
+    /// <summary>Ranked per-app data usage breakdown for the selected date range.</summary>
+    public class UsageTopAppsPanel : Control
+    {
+        public TrayApp App;
+        readonly List<UsageAppRow> rows = new List<UsageAppRow>();
+        readonly Font bold = new Font("Segoe UI Semibold", 9.5f);
+        readonly Font small = new Font("Segoe UI", 8f);
+        string span = "";
+        long rangeTotal;
+        int hover = -1;
+        Rectangle linkRect = Rectangle.Empty;
+        const int Head = 30, RowH = 26;
+
+        public UsageTopAppsPanel()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            BackColor = Theme.Card;
+            Font = new Font("Segoe UI", 9f);
+        }
+
+        public void SetData(string spanText, long totalBytes, List<UsageAppRow> items)
+        {
+            span = spanText ?? "";
+            rangeTotal = totalBytes;
+            rows.Clear();
+            if (items != null) rows.AddRange(items);
+            Invalidate();
+        }
+
+        Rectangle RowRect(int i) { return new Rectangle(0, Head + i * RowH, Width, RowH); }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            int h = -1;
+            int maxRows = Math.Max(0, (Height - Head - 6) / RowH);
+            for (int i = 0; i < Math.Min(rows.Count, maxRows); i++)
+                if (RowRect(i).Contains(e.Location)) { h = i; break; }
+            Cursor = linkRect.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+            if (h != hover) { hover = h; Invalidate(); }
+            base.OnMouseMove(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e) { hover = -1; Invalidate(); base.OnMouseLeave(e); }
+
+        protected override void OnMouseClick(MouseEventArgs e)
+        {
+            base.OnMouseClick(e);
+            if (e.Button == MouseButtons.Left && App != null && linkRect.Contains(e.Location))
+                App.RestartElevated();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(BackColor);
+            using (Pen p = new Pen(Theme.Border)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+
+            TextRenderer.DrawText(g, "Top apps", bold, new Rectangle(10, 0, Width - 20, Head), Theme.Ink,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+            if (span.Length > 0)
+                TextRenderer.DrawText(g, span, small, new Rectangle(90, 0, Width - 100, Head), Theme.Muted,
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.Right | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+            using (Pen lp = new Pen(Color.FromArgb(236, 238, 242))) g.DrawLine(lp, 1, Head - 1, Width - 2, Head - 1);
+            linkRect = Rectangle.Empty;
+
+            if (rows.Count == 0)
+            {
+                if (App != null && !App.Procs.EtwActive)
+                {
+                    TextRenderer.DrawText(g, "Per-app history is recorded while running as administrator.", Font,
+                        new Point(12, Head + 14), Theme.Muted);
+                    string link = "Restart NetSpeed Boss as administrator \u2192";
+                    Size ls = TextRenderer.MeasureText(link, bold);
+                    linkRect = new Rectangle(12, Head + 40, ls.Width, ls.Height);
+                    TextRenderer.DrawText(g, link, bold, linkRect.Location, Theme.Accent);
+                }
+                else
+                {
+                    TextRenderer.DrawText(g, "No per-app usage recorded for these dates yet.", Font,
+                        new Point(12, Head + 14), Theme.Muted);
+                }
+                return;
+            }
+
+            long maxTot = Math.Max(1, rows[0].Total);
+            long denom = Math.Max(rangeTotal, maxTot);
+            int maxRows = Math.Max(1, (Height - Head - 6) / RowH);
+            int count = Math.Min(rows.Count, maxRows);
+            Color dnCol = App != null ? App.S.DownColor : Theme.Accent;
+            Color upCol = App != null ? App.S.UpColor : Color.FromArgb(255, 165, 60);
+            int totW = TextRenderer.MeasureText("888.8 GB  100%", Font).Width + 4;
+            int splitW = TextRenderer.MeasureText("▼ 888.8 GB  ▲ 888.8 GB", small).Width + 4;
+            bool showSplit = Width >= 430;
+            TextFormatFlags fr = TextFormatFlags.VerticalCenter | TextFormatFlags.Right | TextFormatFlags.SingleLine;
+
+            for (int i = 0; i < count; i++)
+            {
+                UsageAppRow r = rows[i];
+                Rectangle rr = RowRect(i);
+                if (i == hover) using (SolidBrush hb = new SolidBrush(Color.FromArgb(245, 247, 250))) g.FillRectangle(hb, 1, rr.Top, Width - 2, rr.Height);
+
+                int x = 10;
+                TextRenderer.DrawText(g, (i + 1).ToString(), small, new Rectangle(x, rr.Top, 18, RowH), Theme.Muted,
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+                x += 20;
+
+                int right = Width - 10;
+                Rectangle totR = new Rectangle(right - totW, rr.Top, totW, RowH);
+                int pct = denom > 0 ? (int)Math.Round(r.Total * 100.0 / denom) : 0;
+                TextRenderer.DrawText(g, Fmt.Size(r.Total) + "  " + pct + "%", Font, totR, Theme.Ink, fr);
+
+                int rightEdge = totR.Left - 6;
+                if (showSplit)
+                {
+                    Rectangle spR = new Rectangle(rightEdge - splitW, rr.Top, splitW, RowH);
+                    TextRenderer.DrawText(g, "\u25BC " + Fmt.Size(r.Down) + "  \u25B2 " + Fmt.Size(r.Up), small, spR, Theme.Muted, fr);
+                    rightEdge = spR.Left - 8;
+                }
+
+                int nameW = Math.Min(150, Math.Max(75, (rightEdge - x) / 2));
+                TextRenderer.DrawText(g, r.Name, Font, new Rectangle(x, rr.Top, nameW, RowH), Theme.Ink,
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+
+                int bx = x + nameW + 8, bw = rightEdge - bx;
+                if (bw > 24)
+                {
+                    using (SolidBrush track = new SolidBrush(Color.FromArgb(238, 240, 243))) g.FillRectangle(track, bx, rr.Top + RowH / 2 - 3, bw, 6);
+                    int fw = (int)Math.Round(bw * Math.Min(1.0, (double)r.Total / maxTot));
+                    int dw = r.Total > 0 ? (int)Math.Round(fw * ((double)r.Down / r.Total)) : 0;
+                    if (dw > 0) using (SolidBrush db = new SolidBrush(dnCol)) g.FillRectangle(db, bx, rr.Top + RowH / 2 - 3, dw, 6);
+                    if (fw - dw > 0) using (SolidBrush ub = new SolidBrush(upCol)) g.FillRectangle(ub, bx + dw, rr.Top + RowH / 2 - 3, fw - dw, 6);
+                }
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) { bold.Dispose(); small.Dispose(); }
+            base.Dispose(disposing);
+        }
+    }
+
     /// <summary>Stacked daily bars (download + upload) for the last N days.</summary>
     public class UsageChart : Control
     {

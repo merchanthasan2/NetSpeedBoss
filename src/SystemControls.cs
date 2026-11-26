@@ -157,9 +157,10 @@ namespace NetSpeedBoss
         }
     }
 
-    /// <summary>"About this system" list: label, brand badge, value.</summary>
+    /// <summary>Key-value list with optional brand badges.</summary>
     public class SpecList : Control
     {
+        public string Heading = "About this system";
         public List<SpecRow> Rows = new List<SpecRow>();
         public string Loading = "Reading system information...";
         readonly Font fBadge = new Font("Segoe UI", 8f, FontStyle.Bold), fBold = new Font("Segoe UI Semibold", 9.5f);
@@ -179,7 +180,7 @@ namespace NetSpeedBoss
             Graphics g = e.Graphics;
             g.Clear(BackColor);
             using (Pen p = new Pen(Theme.Border)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
-            TextRenderer.DrawText(g, "About this system", fBold, new Point(12, 9), Theme.Ink);
+            TextRenderer.DrawText(g, Heading, fBold, new Point(12, 9), Theme.Ink);
             if (Rows.Count == 0) { TextRenderer.DrawText(g, Loading, Font, new Point(12, Head + 6), Theme.Muted); return; }
             for (int i = 0; i < Rows.Count; i++)
             {

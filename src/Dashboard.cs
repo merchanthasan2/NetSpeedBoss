@@ -57,7 +57,7 @@ namespace NetSpeedBoss
         public Dashboard(TrayApp app)
         {
             this.app = app;
-            Text = TrayApp.AppName;
+            Text = TrayApp.AppName + (app.IsAdmin ? " (Administrator)" : "");
             Font = uiFont;
             BackColor = Theme.Bg;
             StartPosition = FormStartPosition.CenterScreen;
@@ -77,6 +77,7 @@ namespace NetSpeedBoss
             tabs.TabPages.Add(BuildSettings());
             tabs.SelectedIndexChanged += delegate { lastUsageRefresh = DateTime.MinValue; OnTick(); };
             Controls.Add(tabs);
+            Controls.Add(BuildModeBar());
 
             FormClosing += delegate
             {
@@ -85,6 +86,79 @@ namespace NetSpeedBoss
             };
             LoadSettingsIntoUi();
             OnTick();
+        }
+
+        public void OnOpened()
+        {
+            if (publicIp == null || !publicIp.Ok || (DateTime.Now - publicIp.CheckedAt).TotalSeconds >= 60)
+                RequestPublicIp();
+        }
+
+        Panel BuildModeBar()
+        {
+            bool admin = app.IsAdmin;
+            Color bg = admin ? Color.FromArgb(236, 253, 245) : Color.FromArgb(255, 248, 231);
+            Color accent = admin ? Color.FromArgb(16, 185, 129) : Color.FromArgb(217, 119, 6);
+            Color fg = admin ? Color.FromArgb(6, 95, 70) : Color.FromArgb(120, 53, 15);
+
+            Panel bar = new Panel(); bar.Dock = DockStyle.Top; bar.Height = 36; bar.BackColor = bg; bar.Padding = new Padding(10, 4, 10, 4);
+            bar.Paint += delegate(object s, PaintEventArgs e)
+            {
+                using (SolidBrush b = new SolidBrush(accent)) e.Graphics.FillRectangle(b, 0, 0, 4, bar.Height);
+                using (Pen p = new Pen(Theme.Border)) e.Graphics.DrawLine(p, 0, bar.Height - 1, bar.Width, bar.Height - 1);
+            };
+
+            FlowLayoutPanel right = new FlowLayoutPanel(); right.Dock = DockStyle.Right; right.AutoSize = true; right.WrapContents = false;
+            right.FlowDirection = FlowDirection.LeftToRight; right.BackColor = bg; right.Padding = new Padding(0, 1, 0, 0);
+
+            if (!admin)
+            {
+                Button btn = new Button(); btn.Text = "Restart as Administrator"; btn.AutoSize = true;
+                btn.FlatStyle = FlatStyle.Flat; btn.FlatAppearance.BorderSize = 0;
+                btn.BackColor = accent; btn.ForeColor = Color.White;
+                btn.Font = new Font("Segoe UI Semibold", 8.5f); btn.Cursor = Cursors.Hand;
+                btn.Padding = new Padding(8, 1, 8, 1); btn.Margin = new Padding(0, 1, 4, 0);
+                btn.Click += delegate { app.RestartElevated(); };
+
+                Button close = new Button(); close.Text = "×"; close.Width = 24; close.Height = 24;
+                close.FlatStyle = FlatStyle.Flat; close.FlatAppearance.BorderSize = 0;
+                close.BackColor = bg; close.ForeColor = fg; close.Cursor = Cursors.Hand;
+                close.Margin = new Padding(0, 1, 0, 0);
+                close.Click += delegate { bar.Visible = false; };
+                right.Controls.Add(btn); right.Controls.Add(close);
+            }
+            else
+            {
+                Button autoBtn = new Button();
+                autoBtn.AutoSize = true; autoBtn.FlatStyle = FlatStyle.Flat;
+                autoBtn.FlatAppearance.BorderColor = accent; autoBtn.FlatAppearance.BorderSize = 1;
+                autoBtn.BackColor = Color.White; autoBtn.ForeColor = fg;
+                autoBtn.Font = new Font("Segoe UI Semibold", 8.5f); autoBtn.Cursor = Cursors.Hand;
+                autoBtn.Padding = new Padding(8, 1, 8, 1); autoBtn.Margin = new Padding(0, 1, 0, 0);
+                Action syncAuto = delegate
+                {
+                    bool on = app.ElevatedStartupEnabled;
+                    autoBtn.Text = on ? "✔ Auto-starts as Admin" : "Auto-start as Admin (no prompt)";
+                };
+                syncAuto();
+                autoBtn.Click += delegate
+                {
+                    if (!app.SetElevatedStartup(!app.ElevatedStartupEnabled))
+                        MessageBox.Show("Could not update the elevated sign-in task.", TrayApp.AppName);
+                    syncAuto();
+                    LoadSettingsIntoUi();
+                };
+                right.Controls.Add(autoBtn);
+            }
+
+            Label msg = new Label(); msg.Dock = DockStyle.Fill; msg.TextAlign = ContentAlignment.MiddleLeft;
+            msg.ForeColor = fg; msg.BackColor = bg; msg.Padding = new Padding(4, 0, 0, 0);
+            msg.Text = admin
+                ? "✔ Administrator mode active  ·  Live per-app speeds and hourly app logs are enabled."
+                : "Standard mode  ·  Per-app live speeds and hourly app logs require Administrator rights.";
+
+            bar.Controls.Add(msg); bar.Controls.Add(right);
+            return bar;
         }
 
         public void SelectTab(int i) { if (i >= 0 && i < tabs.TabPages.Count) tabs.SelectedIndex = i; }
@@ -452,13 +526,13 @@ namespace NetSpeedBoss
             ct.Dock = DockStyle.Top; ct.Height = 24; ct.BackColor = Theme.Card; ct.Padding = new Padding(6, 4, 0, 0);
             chartHost.Controls.Add(usageChart); chartHost.Controls.Add(ct);
 
-            Panel listHost = new Panel(); listHost.Dock = DockStyle.Bottom; listHost.Height = 190; listHost.Padding = new Padding(6);
+            Panel listHost = new Panel(); listHost.Dock = DockStyle.Fill; listHost.Padding = new Padding(0, 0, 4, 0);
             usageList = new DbListView(); usageList.Dock = DockStyle.Fill;
-            Col(usageList, "Date", 150, HorizontalAlignment.Left);
-            Col(usageList, "Downloaded", 120, HorizontalAlignment.Right);
-            Col(usageList, "Uploaded", 120, HorizontalAlignment.Right);
-            Col(usageList, "Total", 120, HorizontalAlignment.Right);
-            FlowLayoutPanel btns = new FlowLayoutPanel(); btns.Dock = DockStyle.Bottom; btns.Height = 34; btns.FlowDirection = FlowDirection.RightToLeft;
+            Col(usageList, "Date", 130, HorizontalAlignment.Left);
+            Col(usageList, "Downloaded", 95, HorizontalAlignment.Right);
+            Col(usageList, "Uploaded", 95, HorizontalAlignment.Right);
+            Col(usageList, "Total", 95, HorizontalAlignment.Right);
+            FlowLayoutPanel btns = new FlowLayoutPanel(); btns.Dock = DockStyle.Bottom; btns.Height = 32; btns.FlowDirection = FlowDirection.RightToLeft;
             Button reset = new Button(); reset.Text = "Reset usage data..."; reset.AutoSize = true;
             reset.Click += delegate
             {
@@ -478,19 +552,32 @@ namespace NetSpeedBoss
             btns.Controls.Add(reset); btns.Controls.Add(export);
             listHost.Controls.Add(usageList); listHost.Controls.Add(btns);
 
-            listHost.Height = 170;
-            p.Controls.Add(chartHost); p.Controls.Add(listHost); p.Controls.Add(BuildRangePanel()); p.Controls.Add(limitPanel); p.Controls.Add(cards);
+            usageTopApps = new UsageTopAppsPanel(); usageTopApps.App = app; usageTopApps.Dock = DockStyle.Fill;
+            Panel topAppsHost = new Panel(); topAppsHost.Dock = DockStyle.Fill; topAppsHost.Padding = new Padding(4, 0, 0, 0);
+            topAppsHost.Controls.Add(usageTopApps);
+
+            TableLayoutPanel bottomHost = new TableLayoutPanel();
+            bottomHost.Dock = DockStyle.Bottom; bottomHost.Height = 204; bottomHost.Padding = new Padding(6, 2, 6, 6);
+            bottomHost.ColumnCount = 2; bottomHost.RowCount = 1;
+            bottomHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            bottomHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            bottomHost.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            bottomHost.Controls.Add(listHost, 0, 0);
+            bottomHost.Controls.Add(topAppsHost, 1, 0);
+
+            p.Controls.Add(chartHost); p.Controls.Add(bottomHost); p.Controls.Add(BuildRangePanel()); p.Controls.Add(limitPanel); p.Controls.Add(cards);
             return p;
         }
 
         // ----- date range report -----
         DateTimePicker rFrom, rTo;
-        Label rSummary, rApps;
+        Label rSummary;
+        UsageTopAppsPanel usageTopApps;
         bool rangeLoading;
 
         Control BuildRangePanel()
         {
-            Panel host = new Panel(); host.Dock = DockStyle.Top; host.Height = 142; host.Padding = new Padding(6, 4, 6, 6);
+            Panel host = new Panel(); host.Dock = DockStyle.Top; host.Height = 112; host.Padding = new Padding(6, 4, 6, 4);
             Panel card = new Panel(); card.Dock = DockStyle.Fill; card.BackColor = Theme.Card; card.Padding = new Padding(10, 6, 10, 6);
 
             FlowLayoutPanel row = new FlowLayoutPanel(); row.Dock = DockStyle.Top; row.Height = 62; row.WrapContents = true;
@@ -517,12 +604,10 @@ namespace NetSpeedBoss
             logs.Click += delegate { OpenLogFolder(); };
             row.Controls.Add(exp); row.Controls.Add(logs);
 
-            rSummary = new Label(); rSummary.Dock = DockStyle.Top; rSummary.Height = 26; rSummary.TextAlign = ContentAlignment.MiddleLeft;
+            rSummary = new Label(); rSummary.Dock = DockStyle.Top; rSummary.Height = 28; rSummary.TextAlign = ContentAlignment.MiddleLeft;
             rSummary.Font = new Font("Segoe UI Semibold", 9.5f); rSummary.ForeColor = Theme.Ink; rSummary.AutoEllipsis = true;
-            rApps = new Label(); rApps.Dock = DockStyle.Top; rApps.Height = 22; rApps.TextAlign = ContentAlignment.MiddleLeft;
-            rApps.ForeColor = Theme.Muted; rApps.AutoEllipsis = true;
 
-            card.Controls.Add(rApps); card.Controls.Add(rSummary); card.Controls.Add(row);
+            card.Controls.Add(rSummary); card.Controls.Add(row);
             host.Controls.Add(card);
 
             rangeLoading = true;
@@ -569,22 +654,15 @@ namespace NetSpeedBoss
                             (busiestV > 0 ? "   ·  busiest " + busiest.ToString("ddd d MMM") + " (" + Fmt.Size(busiestV) + ")" : "") : "");
 
             Dictionary<string, long[]> apps = app.Log.AppTotals(from, to);
-            if (apps.Count == 0)
-                rApps.Text = app.Procs.EtwActive ? "Top apps: no per-app data recorded for these dates yet."
-                                                 : "Top apps: per-app usage is recorded while NetSpeed Boss runs as administrator.";
-            else
+            List<UsageAppRow> rows = new List<UsageAppRow>();
+            foreach (KeyValuePair<string, long[]> kv in apps)
             {
-                List<KeyValuePair<string, long[]>> l = new List<KeyValuePair<string, long[]>>(apps);
-                l.Sort(delegate(KeyValuePair<string, long[]> a, KeyValuePair<string, long[]> b)
-                { return (b.Value[0] + b.Value[1]).CompareTo(a.Value[0] + a.Value[1]); });
-                System.Text.StringBuilder sb = new System.Text.StringBuilder("Top apps:  ");
-                for (int i = 0; i < Math.Min(6, l.Count); i++)
-                {
-                    if (i > 0) sb.Append("   ·  ");
-                    sb.Append(l[i].Key).Append(' ').Append(Fmt.Size(l[i].Value[0] + l[i].Value[1]));
-                }
-                rApps.Text = sb.ToString();
+                UsageAppRow ur = new UsageAppRow();
+                ur.Name = kv.Key; ur.Down = kv.Value[0]; ur.Up = kv.Value[1];
+                if (ur.Total > 0) rows.Add(ur);
             }
+            rows.Sort(delegate(UsageAppRow a, UsageAppRow b) { return b.Total.CompareTo(a.Total); });
+            usageTopApps.SetData(span, tot[0] + tot[1], rows);
         }
 
         void ExportRange()
@@ -683,10 +761,14 @@ namespace NetSpeedBoss
 
         // =================================================================== SYSTEM
         UtilCard cpuCard, gpuCard, memCard;
-        SpecList specs;
+        SpecList specs, netSpecs;
         Panel specHost;
+        Button btnCheckIp, btnCopyIp;
         SystemInfo sysInfo;
-        bool sysInfoRequested;
+        PublicIpInfo publicIp;
+        string lastLocalIp = "";
+        DateTime lastNetRefresh = DateTime.MinValue;
+        bool sysInfoRequested, ipLookupBusy;
 
         TabPage BuildSystem()
         {
@@ -702,14 +784,105 @@ namespace NetSpeedBoss
             foreach (UtilCard c in new UtilCard[] { cpuCard, gpuCard, memCard }) { c.Dock = DockStyle.Fill; cards.Controls.Add(c); }
 
             specHost = new Panel(); specHost.Dock = DockStyle.Fill; specHost.AutoScroll = true; specHost.Padding = new Padding(6, 4, 6, 6);
+            netSpecs = new SpecList(); netSpecs.Heading = "Network & ISP"; netSpecs.Loading = "Reading network information..."; netSpecs.Dock = DockStyle.Top; netSpecs.Height = 120;
+            Panel gap = new Panel(); gap.Dock = DockStyle.Top; gap.Height = 8;
             specs = new SpecList(); specs.Dock = DockStyle.Top; specs.Height = 120;
             FlowLayoutPanel bar = new FlowLayoutPanel(); bar.Dock = DockStyle.Top; bar.Height = 34; bar.FlowDirection = FlowDirection.RightToLeft;
             Button copy = new Button(); copy.Text = "Copy system info"; copy.AutoSize = true;
-            copy.Click += delegate { if (sysInfo != null) try { Clipboard.SetText(sysInfo.ToText()); copy.Text = "Copied ✔"; } catch { } };
-            bar.Controls.Add(copy);
-            specHost.Controls.Add(specs); specHost.Controls.Add(bar);
+            copy.Click += delegate { if (sysInfo != null) try { Clipboard.SetText(BuildSystemClipboardText()); copy.Text = "Copied ✔"; } catch { } };
+            btnCopyIp = new Button(); btnCopyIp.Text = "Copy IP"; btnCopyIp.AutoSize = true;
+            btnCopyIp.Click += delegate
+            {
+                string ip = (publicIp != null && publicIp.Ok) ? publicIp.Ip : lastLocalIp;
+                if (ip.Length > 0) try { Clipboard.SetText(ip); btnCopyIp.Text = "Copied ✔"; } catch { }
+            };
+            btnCheckIp = new Button(); btnCheckIp.Text = "Check Public IP & ISP"; btnCheckIp.AutoSize = true;
+            btnCheckIp.Click += delegate { RequestPublicIp(); };
+            bar.Controls.Add(copy); bar.Controls.Add(btnCopyIp); bar.Controls.Add(btnCheckIp);
+            specHost.Controls.Add(specs); specHost.Controls.Add(gap); specHost.Controls.Add(netSpecs); specHost.Controls.Add(bar);
             p.Controls.Add(specHost); p.Controls.Add(cards);
             return p;
+        }
+
+        string BuildSystemClipboardText()
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            if (netSpecs != null && netSpecs.Rows.Count > 0)
+            {
+                sb.Append("Network & ISP (NetSpeed Boss)\r\n");
+                foreach (SpecRow r in netSpecs.Rows) sb.Append(r.Label).Append(": ").Append(r.Value.Replace("   \u00B7   ", ", ")).Append("\r\n");
+                sb.Append("\r\n");
+            }
+            if (sysInfo != null) sb.Append(sysInfo.ToText());
+            return sb.ToString();
+        }
+
+        void RefreshNetworkCard(bool force)
+        {
+            if (!force && (DateTime.UtcNow - lastNetRefresh).TotalSeconds < 5) return;
+            lastNetRefresh = DateTime.UtcNow;
+            List<AdapterInfo> nets = app.Net.Adapters;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string localIp;
+                List<SpecRow> rows = NetworkInfo.GatherLocalRows(nets, out localIp);
+                try { if (!IsDisposed && IsHandleCreated) BeginInvoke((MethodInvoker)delegate { if (!IsDisposed) ApplyNetworkCard(rows, localIp); }); } catch { }
+            });
+        }
+
+        void ApplyNetworkCard(List<SpecRow> localRows, string localIp)
+        {
+            lastLocalIp = localIp;
+            List<SpecRow> rows = new List<SpecRow>(localRows);
+            if (ipLookupBusy)
+            {
+                rows.Add(new SpecRow("Public IP", "Looking up public IP & ISP...", null));
+            }
+            else if (publicIp != null && publicIp.Ok)
+            {
+                rows.Add(new SpecRow("Public IP", publicIp.Ip + "   \u00B7   checked " + publicIp.CheckedAt.ToString("t"), null));
+                if (publicIp.Isp.Length > 0) rows.Add(new SpecRow("ISP", publicIp.Isp, null));
+                if (publicIp.Location.Length > 0) rows.Add(new SpecRow("Location", publicIp.Location, null));
+            }
+            else if (publicIp != null && publicIp.Error.Length > 0)
+            {
+                rows.Add(new SpecRow("Public IP", "Lookup failed (" + publicIp.Error + ")", null));
+            }
+            else
+            {
+                rows.Add(new SpecRow("Public IP & ISP", "Checked automatically when dashboard opens", null));
+            }
+            netSpecs.Rows = rows;
+            netSpecs.Height = netSpecs.ContentHeight;
+            netSpecs.Invalidate();
+        }
+
+        void RequestPublicIp()
+        {
+            if (ipLookupBusy) return;
+            ipLookupBusy = true;
+            btnCheckIp.Enabled = false;
+            btnCheckIp.Text = "Checking...";
+            btnCopyIp.Text = "Copy IP";
+            RefreshNetworkCard(true);
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                PublicIpInfo info = NetworkInfo.LookupPublicIp();
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            if (IsDisposed) return;
+                            ipLookupBusy = false;
+                            publicIp = info;
+                            btnCheckIp.Enabled = true;
+                            btnCheckIp.Text = info.Ok ? "Refresh IP & ISP" : "Check Public IP & ISP";
+                            RefreshNetworkCard(true);
+                        });
+                }
+                catch { }
+            });
         }
 
         void RequestSystemInfo()
@@ -749,6 +922,7 @@ namespace NetSpeedBoss
         void TickSystem()
         {
             RequestSystemInfo();
+            RefreshNetworkCard(false);
             SystemMonitor m = app.Sys;
             m.SampleGpu();
 
@@ -815,6 +989,40 @@ namespace NetSpeedBoss
                 return c;
             };
 
+            header("Administrator & Startup");
+            Label adminState = new Label(); adminState.AutoSize = true;
+            adminState.Font = new Font("Segoe UI Semibold", 9f);
+            adminState.ForeColor = app.IsAdmin ? Color.FromArgb(6, 95, 70) : Color.FromArgb(146, 64, 14);
+            adminState.Text = app.IsAdmin
+                ? "✔ Running as Administrator — live per-app speeds and app usage logs are active."
+                : "Running in Standard mode — restart as Administrator once to unlock per-app speeds.";
+            row("Mode", adminState);
+            if (!app.IsAdmin)
+            {
+                Button el = new Button(); el.Text = "Restart as Administrator"; el.AutoSize = true;
+                el.FlatStyle = FlatStyle.Flat; el.FlatAppearance.BorderSize = 0;
+                el.BackColor = Color.FromArgb(217, 119, 6); el.ForeColor = Color.White;
+                el.Font = new Font("Segoe UI Semibold", 9f); el.Padding = new Padding(10, 3, 10, 3);
+                el.Cursor = Cursors.Hand;
+                el.Click += delegate { app.RestartElevated(); };
+                row("", el);
+            }
+            sStartup = new CheckBox(); sStartup.Text = "Start with Windows (Standard mode)"; sStartup.AutoSize = true;
+            sStartup.CheckedChanged += delegate { if (!loadingSettings) app.StartupEnabled = sStartup.Checked; };
+            row("", sStartup);
+            sElevated = new CheckBox(); sElevated.AutoSize = true;
+            sElevated.Text = "Start as Administrator at sign-in (per-app speeds, no UAC prompt)";
+            sElevated.Enabled = app.IsAdmin || app.ElevatedStartupEnabled;
+            sElevated.CheckedChanged += delegate
+            {
+                if (loadingSettings) return;
+                if (!app.SetElevatedStartup(sElevated.Checked))
+                    MessageBox.Show(sElevated.Checked ? "Could not create the sign-in task. Restart NetSpeed Boss as administrator and try again."
+                                                      : "Could not remove the sign-in task (administrator rights may be required).", TrayApp.AppName);
+                LoadSettingsIntoUi();
+            };
+            row("", sElevated);
+
             header("Taskbar speed");
             sTaskbar = check("Show speed on the taskbar (next to the clock - drag it to move)"); row("", sTaskbar);
             tFont = new ComboBox(); tFont.DropDownStyle = ComboBoxStyle.DropDownList; tFont.Width = 220; tFont.MaxDropDownItems = 20;
@@ -878,28 +1086,7 @@ namespace NetSpeedBoss
             sStartDay.ValueChanged += delegate { SaveUi(); };
             row("Billing cycle starts on day", sStartDay);
 
-            header("System");
-            sStartup = new CheckBox(); sStartup.Text = "Start with Windows"; sStartup.AutoSize = true;
-            sStartup.CheckedChanged += delegate { if (!loadingSettings) app.StartupEnabled = sStartup.Checked; };
-            row("", sStartup);
-            sElevated = new CheckBox(); sElevated.AutoSize = true;
-            sElevated.Text = "Start with administrator rights at sign-in (per-app speeds, no prompt)";
-            sElevated.Enabled = app.IsAdmin || app.ElevatedStartupEnabled;
-            sElevated.CheckedChanged += delegate
-            {
-                if (loadingSettings) return;
-                if (!app.SetElevatedStartup(sElevated.Checked))
-                    MessageBox.Show(sElevated.Checked ? "Could not create the sign-in task. Restart NetSpeed Boss as administrator and try again."
-                                                      : "Could not remove the sign-in task (administrator rights may be required).", TrayApp.AppName);
-                LoadSettingsIntoUi();
-            };
-            row("", sElevated);
-            if (!app.IsAdmin)
-            {
-                Label eh = new Label(); eh.AutoSize = true; eh.ForeColor = Theme.Muted; eh.Margin = new Padding(18, 0, 0, 4);
-                eh.Text = "Restart as administrator once to turn this on.";
-                row("", eh);
-            }
+            header("Data & folders");
             FlowLayoutPanel sys = new FlowLayoutPanel(); sys.AutoSize = true; sys.WrapContents = false;
             Button logsBtn = new Button(); logsBtn.Text = "Open usage logs (Documents)"; logsBtn.AutoSize = true;
             logsBtn.Click += delegate { OpenLogFolder(); };
@@ -907,11 +1094,6 @@ namespace NetSpeedBoss
             Button folder = new Button(); folder.Text = "Open settings folder"; folder.AutoSize = true;
             folder.Click += delegate { Directory.CreateDirectory(Settings.Dir); Process.Start("explorer.exe", "\"" + Settings.Dir + "\""); };
             sys.Controls.Add(folder);
-            if (!app.IsAdmin)
-            {
-                Button el = new Button(); el.Text = "Restart as administrator"; el.AutoSize = true; el.Click += delegate { app.RestartElevated(); };
-                sys.Controls.Add(el);
-            }
             row("", sys);
             Label about = new Label(); about.AutoSize = true; about.ForeColor = Theme.Muted; about.Margin = new Padding(0, 16, 0, 10);
             about.Text = TrayApp.AppName + " " + Application.ProductVersion + (app.IsAdmin ? "  ·  running as administrator" : "") +
