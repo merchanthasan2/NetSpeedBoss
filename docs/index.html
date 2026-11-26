@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NetSpeed Boss · Live network speed on your Windows taskbar</title>
-<meta name="description" content="Free, open-source Windows app that shows your live download and upload speed on the taskbar, which apps use your connection, and how much data you use. Install with winget.">
+<meta name="description" content="Free, open-source Windows app by Quantum Step that shows your live download and upload speed on the taskbar, which apps use your connection, and how much data you use.">
 <meta property="og:title" content="NetSpeed Boss">
 <meta property="og:description" content="See your internet speed on the Windows taskbar. Free and open source.">
 <meta property="og:image" content="images/dashboard-live.png">
@@ -41,10 +41,13 @@ main,header,footer{position:relative;z-index:1}
 nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:-.02em;text-decoration:none;font-size:19px}
 .brand img{width:30px;height:30px}
-.navlinks{display:flex;gap:26px;font-size:15px;color:var(--mute)}
+.navlinks{display:flex;align-items:center;gap:22px;font-size:15px;color:var(--mute)}
 .navlinks a{text-decoration:none;transition:color .2s}
 .navlinks a:hover{color:var(--paper)}
-@media (max-width:720px){.navlinks a:not(.gh){display:none}}
+.star-pill{display:inline-flex;align-items:center;gap:7px;background:var(--ink-2);border:1px solid var(--line-2);color:var(--paper)!important;padding:7px 13px;border-radius:999px;font:600 13px var(--mono);transition:border-color .2s,transform .15s}
+.star-pill:hover{border-color:var(--up);transform:translateY(-1px)}
+.star-pill .st{color:var(--up)}
+@media (max-width:720px){.navlinks a:not(.gh):not(.star-pill){display:none}}
 
 /* hero */
 .hero{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding-top:56px;padding-bottom:40px}
@@ -55,17 +58,28 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0
 h1{font-size:clamp(44px,6.4vw,82px);line-height:.95;letter-spacing:-.045em;margin:22px 0 22px;font-weight:800}
 h1 em{font-style:normal;background:linear-gradient(100deg,var(--down),#b8f5cc 45%,var(--up));-webkit-background-clip:text;background-clip:text;color:transparent}
 .lede{font-size:20px;color:#c3cbd4;max-width:34ch;margin:0 0 34px}
-.cta{display:flex;flex-wrap:wrap;gap:14px;align-items:stretch}
-.btn{display:inline-flex;align-items:center;gap:12px;padding:16px 24px;border-radius:12px;font-weight:600;text-decoration:none;font-size:17px;transition:transform .15s, box-shadow .2s, background .2s}
+.cta{display:flex;flex-wrap:wrap;gap:12px;align-items:stretch}
+.btn{display:inline-flex;align-items:center;gap:10px;padding:15px 22px;border-radius:12px;font-weight:600;text-decoration:none;font-size:16px;transition:transform .15s, box-shadow .2s, background .2s, border-color .2s}
 .btn-primary{background:var(--down);color:#04140a;box-shadow:0 10px 40px -10px var(--down-glow)}
 .btn-primary:hover{transform:translateY(-2px);box-shadow:0 16px 50px -10px var(--down-glow)}
-.btn svg{width:20px;height:20px}
-.cmd{display:flex;align-items:center;gap:12px;background:var(--ink-2);border:1px solid var(--line-2);border-radius:12px;padding:0 8px 0 18px;font:400 14px var(--mono);color:#d4dbe2;min-height:56px}
+.btn-ghost{background:var(--ink-2);color:var(--paper);border:1px solid var(--line-2)}
+.btn-ghost:hover{transform:translateY(-2px);border-color:var(--mute)}
+.btn svg{width:19px;height:19px;flex-shrink:0}
+.pkgbar{margin-top:14px;background:var(--ink-2);border:1px solid var(--line-2);border-radius:12px;padding:10px 12px;max-width:560px}
+.pkgtabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.pkgtab{background:transparent;border:1px solid transparent;color:var(--mute);border-radius:7px;padding:4px 10px;font:600 11.5px var(--mono);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.pkgtab.active{background:var(--ink-3);border-color:var(--line-2);color:var(--paper)}
+.badge{font-size:10px;padding:1px 6px;border-radius:999px;font-weight:600}
+.badge.live{background:rgba(70,215,120,.16);color:var(--down)}
+.badge.soon{background:rgba(255,165,60,.16);color:var(--up)}
+.cmd{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--ink-2);border:1px solid var(--line-2);border-radius:12px;padding:8px 8px 8px 16px;font:400 13px var(--mono);color:#d4dbe2;min-height:48px}
+.pkgbar .cmd{background:var(--ink);min-height:44px}
 .cmd .p{color:var(--dim)}
-.copy{background:var(--ink-3);border:1px solid var(--line-2);color:var(--mute);border-radius:8px;padding:8px 12px;font:600 12px var(--mono);cursor:pointer;transition:all .2s}
+.cmd span.code{overflow-wrap:anywhere}
+.copy{background:var(--ink-3);border:1px solid var(--line-2);color:var(--mute);border-radius:8px;padding:7px 11px;font:600 11.5px var(--mono);cursor:pointer;transition:all .2s;flex-shrink:0}
 .copy:hover{color:var(--paper);border-color:var(--mute)}
 .copy.ok{color:var(--down);border-color:var(--down)}
-.meta{margin-top:22px;display:flex;flex-wrap:wrap;gap:8px 18px;font:400 12.5px var(--mono);color:var(--mute)}
+.meta{margin-top:20px;display:flex;flex-wrap:wrap;gap:8px 18px;font:400 12.5px var(--mono);color:var(--mute)}
 .meta span::before{content:"✓ ";color:var(--down)}
 
 /* live instrument */
@@ -110,6 +124,16 @@ h2{font-size:clamp(34px,4.4vw,56px);line-height:1;letter-spacing:-.04em;margin:1
 .step h3{font-size:24px;letter-spacing:-.02em;margin:0 0 10px}
 .step p{color:var(--mute);margin:0 0 18px}
 .step code{font:13px var(--mono);background:var(--ink-2);border:1px solid var(--line);padding:3px 7px;border-radius:6px;color:#d4dbe2;word-break:break-all}
+.dl-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:34px}
+@media (max-width:920px){.dl-grid{grid-template-columns:1fr 1fr}}
+@media (max-width:620px){.dl-grid{grid-template-columns:1fr}}
+.dl-card{background:var(--ink-2);border:1px solid var(--line);border-radius:var(--r);padding:20px;display:flex;flex-direction:column;gap:10px}
+.dl-card .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.dl-card h4{margin:0;font-size:17px;letter-spacing:-.01em}
+.dl-card p{margin:0;color:var(--mute);font-size:14px;flex:1}
+.dl-card .act{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--ink);border:1px solid var(--line);border-radius:9px;padding:8px 10px;font:12px var(--mono);color:#d4dbe2}
+.dl-card a.dl-link{display:inline-flex;align-items:center;justify-content:center;gap:8px;background:var(--ink-3);border:1px solid var(--line-2);border-radius:9px;padding:9px 12px;font:600 13px var(--mono);text-decoration:none;transition:border-color .2s}
+.dl-card a.dl-link:hover{border-color:var(--down);color:var(--down)}
 
 /* features */
 .features{display:grid;grid-template-columns:repeat(6,1fr);gap:16px;margin-top:56px}
@@ -204,10 +228,11 @@ footer a:hover{color:var(--paper)}
   <nav>
     <a class="brand" href="#"><img src="images/icon.png" alt="">NetSpeed Boss</a>
     <div class="navlinks">
-      <a href="#start">Get started</a>
+      <a href="#start">Install</a>
       <a href="#features">Features</a>
       <a href="#faq">FAQ</a>
-      <a class="gh" href="https://github.com/merchanthasan2/NetSpeedBoss">GitHub ↗</a>
+      <a class="star-pill" href="https://github.com/merchanthasan2/NetSpeedBoss" target="_blank" rel="noopener"><span class="st">★</span> Star <span id="star-count">on GitHub</span></a>
+      <a class="gh" href="https://github.com/merchanthasan2/NetSpeedBoss" target="_blank" rel="noopener">GitHub ↗</a>
     </div>
   </nav>
 </header>
@@ -215,17 +240,30 @@ footer a:hover{color:var(--paper)}
 <main>
   <div class="wrap hero">
     <div>
-      <div class="eyebrow rv" style="--d:0">Free &amp; open source · Windows 10 / 11</div>
+      <div class="eyebrow rv" style="--d:0">Free &amp; open source · Windows 10 / 11 · by Quantum Step · <span id="rel-ver">v1.1.1</span></div>
       <h1 class="rv" style="--d:1">Your internet speed, <em>right on the taskbar.</em></h1>
       <p class="lede rv" style="--d:2">NetSpeed Boss sits next to your clock and shows exactly how fast you're downloading and uploading, second by second. One glance, no guessing.</p>
       <div class="cta rv" style="--d:3">
-        <a class="btn btn-primary" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/latest/download/NetSpeedBoss-Setup.exe">
+        <a class="btn btn-primary" id="hero-setup-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/latest/download/NetSpeedBoss-Setup.exe">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
-          Download for Windows
+          Download Installer (.exe)
         </a>
-        <div class="cmd"><span class="p">&gt;</span><span id="wg">winget install Net.NetSpeedBoss</span><button class="copy" data-copy="winget install Net.NetSpeedBoss">COPY</button></div>
+        <a class="btn btn-ghost" id="hero-zip-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/download/v1.1.1/NetSpeedBoss-1.1.1-portable.zip">
+          Portable (.zip)
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/merchanthasan2/NetSpeedBoss" target="_blank" rel="noopener">
+          <span style="color:var(--up)">★</span> Star on GitHub
+        </a>
       </div>
-      <div class="meta rv" style="--d:4"><span>No admin rights needed</span><span>~120 KB app</span><span>No ads, no tracking</span></div>
+      <div class="pkgbar rv" style="--d:3">
+        <div class="pkgtabs" role="tablist" aria-label="Package manager commands">
+          <button class="pkgtab active" type="button" data-cmd="scoop bucket add netspeedboss https://github.com/merchanthasan2/scoop-bucket ; scoop install netspeedboss">Scoop <span class="badge live">Live</span></button>
+          <button class="pkgtab" type="button" data-cmd="winget install Net.NetSpeedBoss">Winget <span class="badge soon">In review</span></button>
+          <button class="pkgtab" type="button" data-cmd="choco install netspeedboss">Chocolatey <span class="badge soon">In review</span></button>
+        </div>
+        <div class="cmd"><span class="code" id="hero-pkg-cmd">scoop bucket add netspeedboss https://github.com/merchanthasan2/scoop-bucket ; scoop install netspeedboss</span><button class="copy" id="hero-pkg-copy" data-copy="scoop bucket add netspeedboss https://github.com/merchanthasan2/scoop-bucket ; scoop install netspeedboss">COPY</button></div>
+      </div>
+      <div class="meta rv" style="--d:4"><span>No admin rights needed</span><span>~200 KB app</span><span>No ads, no tracking</span><span>MIT License</span></div>
     </div>
 
     <div class="instrument rv" style="--d:2" aria-label="Animated demo of the speed meter">
@@ -252,8 +290,8 @@ footer a:hover{color:var(--paper)}
       <div class="steps">
         <div class="step rv">
           <h3>Install</h3>
-          <p>Open <b>Terminal</b> or PowerShell and run the command below, or download the installer and double-click it.</p>
-          <code>winget install Net.NetSpeedBoss</code>
+          <p>Download the Windows installer or portable zip below, or install straight from PowerShell using Scoop.</p>
+          <code>scoop install netspeedboss</code>
         </div>
         <div class="step rv">
           <h3>Look down</h3>
@@ -262,6 +300,38 @@ footer a:hover{color:var(--paper)}
         <div class="step rv">
           <h3>Dig deeper</h3>
           <p><b>Double-click</b> the meter for graphs, apps and data usage. <b>Right-click</b> it for every option: bold text, units, colors and more.</p>
+        </div>
+      </div>
+      <div class="dl-grid rv" id="install">
+        <div class="dl-card">
+          <div class="top"><h4>Windows Installer</h4><span class="badge live">Ready</span></div>
+          <p>Per-user Inno Setup installer (no admin rights needed, Start Menu &amp; optional auto-start).</p>
+          <a class="dl-link" id="card-setup-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/latest/download/NetSpeedBoss-Setup.exe">Download Setup.exe</a>
+        </div>
+        <div class="dl-card">
+          <div class="top"><h4>Portable ZIP</h4><span class="badge live">Ready</span></div>
+          <p>Single executable (~200 KB) with zero installation. Unzip anywhere and run <code>NetSpeedBoss.exe</code>.</p>
+          <a class="dl-link" id="card-zip-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/download/v1.1.1/NetSpeedBoss-1.1.1-portable.zip">Download portable.zip</a>
+        </div>
+        <div class="dl-card">
+          <div class="top"><h4>Scoop</h4><span class="badge live">Live</span></div>
+          <p>Add the official NetSpeed Boss Scoop bucket once and install or update anytime.</p>
+          <div class="act"><span class="code">scoop bucket add netspeedboss https://github.com/merchanthasan2/scoop-bucket ; scoop install netspeedboss</span><button class="copy" data-copy="scoop bucket add netspeedboss https://github.com/merchanthasan2/scoop-bucket ; scoop install netspeedboss">COPY</button></div>
+        </div>
+        <div class="dl-card">
+          <div class="top"><h4>Winget</h4><span class="badge soon">In review</span></div>
+          <p>Submitted to <code>microsoft/winget-pkgs</code> (<a href="https://github.com/microsoft/winget-pkgs/pull/485779" target="_blank" rel="noopener">PR #485779</a>). Available once merged.</p>
+          <div class="act"><span class="code">winget install Net.NetSpeedBoss</span><button class="copy" data-copy="winget install Net.NetSpeedBoss">COPY</button></div>
+        </div>
+        <div class="dl-card">
+          <div class="top"><h4>Chocolatey</h4><span class="badge soon">In review</span></div>
+          <p>Submitted to <a href="https://community.chocolatey.org/packages/netspeedboss/1.1.1" target="_blank" rel="noopener">Chocolatey</a>. Automated validation &amp; verification passed.</p>
+          <div class="act"><span class="code">choco install netspeedboss</span><button class="copy" data-copy="choco install netspeedboss">COPY</button></div>
+        </div>
+        <div class="dl-card">
+          <div class="top"><h4>Microsoft Store</h4><span class="badge soon">In certification</span></div>
+          <p>Submitted by <b>Quantum Step</b> (Store ID <code>9NP6V92XWLSH</code>). Going live after certification.</p>
+          <a class="dl-link" href="https://github.com/merchanthasan2/NetSpeedBoss/releases" target="_blank" rel="noopener">View all releases ↗</a>
         </div>
       </div>
     </div>
@@ -344,12 +414,12 @@ footer a:hover{color:var(--paper)}
       <div class="kicker rv">Questions</div>
       <h2 class="rv">Good to know.</h2>
       <div class="faq">
-        <details class="rv"><summary>Is it really free?</summary><p>Yes. NetSpeed Boss is free and open source under the MIT license, with no ads, upsells or accounts.</p></details>
-        <details class="rv"><summary>Windows says "Windows protected your PC". Is it safe?</summary><p>That SmartScreen message appears for new apps that are not yet code-signed. Click <b>More info</b>, then <b>Run anyway</b>. The full source code is on GitHub and every release is built automatically from it. Installing with winget avoids the prompt entirely.</p></details>
+        <details class="rv"><summary>Is it really free?</summary><p>Yes. NetSpeed Boss is published by <b>Quantum Step</b> under the MIT license — free and open source with no ads, upsells or accounts.</p></details>
+        <details class="rv"><summary>Windows says "Windows protected your PC". Is it safe?</summary><p>That SmartScreen message appears for new `.exe` installers that are not yet code-signed. Click <b>More info</b>, then <b>Run anyway</b>. The full source code is on GitHub and every release is built automatically from it by GitHub Actions. Installing via Scoop, Winget, or Microsoft Store avoids the prompt.</p></details>
         <details class="rv"><summary>Will it slow down my PC or my internet?</summary><p>No. It reads the counters Windows already keeps, once a second, and uses a fraction of a percent of CPU. It never sends or downloads anything itself.</p></details>
         <details class="rv"><summary>How do I move or customise the taskbar meter?</summary><p>Drag it left or right along the taskbar. Right-click for quick options such as <b>Bold taskbar text</b>, or double-click and open <b>Settings</b> for font, size and colors.</p></details>
-        <details class="rv"><summary>Where is my data stored?</summary><p>Only on your PC. Usage logs (daily, hourly and per-app CSV files that open in Excel) live in <code>Documents\NetSpeed Boss</code>. Settings live in <code>%APPDATA%\NetSpeedBoss</code>.</p></details>
-        <details class="rv"><summary>How do I update or uninstall?</summary><p>Update with <code>winget upgrade Net.NetSpeedBoss</code> or by running a newer installer. Uninstall from <b>Settings → Apps</b>, or with <code>winget uninstall Net.NetSpeedBoss</code>.</p></details>
+        <details class="rv"><summary>Where is my data stored? (Privacy Policy)</summary><p>Only on your PC — NetSpeed Boss collects zero personal data, telemetry, or analytics. Usage logs (daily, hourly and per-app CSV files that open in Excel) live in <code>Documents\NetSpeed Boss</code>. Settings live in <code>%APPDATA%\NetSpeedBoss</code>.</p></details>
+        <details class="rv"><summary>How do I update or uninstall?</summary><p>Update with <code>scoop update netspeedboss</code>, <code>winget upgrade Net.NetSpeedBoss</code>, <code>choco upgrade netspeedboss</code>, or by running a newer installer. Uninstall from <b>Settings → Apps</b> or your package manager.</p></details>
       </div>
     </div>
   </section>
@@ -357,21 +427,26 @@ footer a:hover{color:var(--paper)}
   <div class="wrap final">
     <div class="kicker rv">Ready?</div>
     <h2 class="rv">Stop guessing. Start seeing.</h2>
-    <p class="sub rv">Free for Windows 10 and 11. Takes a few seconds to install.</p>
+    <p class="sub rv">Free for Windows 10 and 11 by <b>Quantum Step</b>. If NetSpeed Boss helps you, please leave a star on GitHub!</p>
     <div class="cta rv">
       <a class="btn btn-primary" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/latest/download/NetSpeedBoss-Setup.exe">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
-        Download for Windows
+        Download Installer (.exe)
       </a>
-      <div class="cmd"><span class="p">&gt;</span><span>winget install Net.NetSpeedBoss</span><button class="copy" data-copy="winget install Net.NetSpeedBoss">COPY</button></div>
+      <a class="btn btn-ghost" id="final-zip-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/download/v1.1.1/NetSpeedBoss-1.1.1-portable.zip">
+        Portable (.zip)
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/merchanthasan2/NetSpeedBoss" target="_blank" rel="noopener">
+        <span style="color:var(--up)">★</span> Star on GitHub <span id="star-count-final"></span>
+      </a>
     </div>
   </div>
 </main>
 
 <footer>
   <div class="wrap">
-    <span>NetSpeed Boss · MIT License</span>
-    <span><a href="https://github.com/merchanthasan2/NetSpeedBoss">Source</a> · <a href="https://github.com/merchanthasan2/NetSpeedBoss/releases">Releases</a> · <a href="https://github.com/merchanthasan2/NetSpeedBoss/issues">Report an issue</a></span>
+    <span>NetSpeed Boss · Published by <b>Quantum Step</b> · MIT License · 100% local, zero telemetry</span>
+    <span><a href="https://github.com/merchanthasan2/NetSpeedBoss" target="_blank" rel="noopener">GitHub</a> · <a href="https://github.com/merchanthasan2/NetSpeedBoss/stargazers" target="_blank" rel="noopener">Star Rating</a> · <a href="https://github.com/merchanthasan2/NetSpeedBoss/releases" target="_blank" rel="noopener">Releases</a> · <a href="https://github.com/merchanthasan2/NetSpeedBoss/issues" target="_blank" rel="noopener">Support &amp; Issues</a></span>
   </div>
 </footer>
 
@@ -386,6 +461,42 @@ footer a:hover{color:var(--paper)}
       b.textContent='COPIED';b.classList.add('ok');setTimeout(function(){b.textContent='COPY';b.classList.remove('ok')},1600);
     });
   });
+
+  // package manager tabs in hero
+  document.querySelectorAll('.pkgtab').forEach(function(tab){
+    tab.addEventListener('click',function(){
+      document.querySelectorAll('.pkgtab').forEach(function(x){x.classList.remove('active')});
+      tab.classList.add('active');
+      var cmd=tab.getAttribute('data-cmd');
+      document.getElementById('hero-pkg-cmd').textContent=cmd;
+      document.getElementById('hero-pkg-copy').setAttribute('data-copy',cmd);
+    });
+  });
+
+  // live GitHub star count & latest release download links
+  fetch('https://api.github.com/repos/merchanthasan2/NetSpeedBoss').then(function(r){return r.ok?r.json():null}).then(function(repo){
+    if(!repo)return;
+    var stars=typeof repo.stargazers_count==='number'?repo.stargazers_count:null;
+    if(stars!==null){
+      var navS=document.getElementById('star-count');
+      var finS=document.getElementById('star-count-final');
+      if(navS)navS.textContent=stars===0?'on GitHub':'· '+stars;
+      if(finS && stars>0)finS.textContent='('+stars+')';
+    }
+  }).catch(function(){});
+  fetch('https://api.github.com/repos/merchanthasan2/NetSpeedBoss/releases/latest').then(function(r){return r.ok?r.json():null}).then(function(rel){
+    if(!rel||!rel.tag_name)return;
+    var v=document.getElementById('rel-ver');if(v)v.textContent=rel.tag_name;
+    var assets=rel.assets||[];
+    var setup=assets.find(function(a){return /-Setup\.exe$/i.test(a.name)});
+    var zip=assets.find(function(a){return /-portable\.zip$/i.test(a.name)});
+    if(setup){
+      ['hero-setup-dl','card-setup-dl'].forEach(function(id){var el=document.getElementById(id);if(el)el.href=setup.browser_download_url});
+    }
+    if(zip){
+      ['hero-zip-dl','card-zip-dl','final-zip-dl'].forEach(function(id){var el=document.getElementById(id);if(el)el.href=zip.browser_download_url});
+    }
+  }).catch(function(){});
 
   // scroll reveal
   var io='IntersectionObserver' in window?new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.12}):null;
