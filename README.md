@@ -34,7 +34,7 @@ winget install Net.NetSpeedBoss
 
 **Option 3: portable.** Download the `portable.zip` from [Releases](https://github.com/merchanthasan2/NetSpeedBoss/releases), unzip it anywhere, and run `NetSpeedBoss.exe`.
 
-Works on Windows 10 and 11 (64-bit). **No administrator rights needed.**
+Works on Windows 10 and 11 (x64 &amp; ARM64). **No administrator rights needed.**
 
 > **"Windows protected your PC"?** New apps that aren't code-signed yet trigger SmartScreen. Click **More info → Run anyway**.
 > Every release is built automatically from this source code by [GitHub Actions](.github/workflows/release.yml).

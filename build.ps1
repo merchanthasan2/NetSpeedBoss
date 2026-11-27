@@ -30,7 +30,7 @@ using System.Reflection;
 
 $files = @(Get-ChildItem $src -Filter *.cs | ForEach-Object { $_.FullName }) + (Join-Path $obj 'AssemblyInfo.cs')
 $exe = Join-Path $out 'NetSpeedBoss.exe'
-& $csc /nologo /target:winexe /platform:x64 /optimize+ /out:"$exe" `
+& $csc /nologo /target:winexe /platform:anycpu /optimize+ /out:"$exe" `
     /win32icon:"$ico" /win32manifest:"$(Join-Path $src 'app.manifest')" `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Management.dll `
     $files
