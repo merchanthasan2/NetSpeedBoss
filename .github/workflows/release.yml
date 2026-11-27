@@ -90,10 +90,14 @@ jobs:
       # and every release is submitted to microsoft/winget-pkgs automatically.
       - name: Submit to winget
         if: ${{ env.WINGET_TOKEN != '' }}
+        continue-on-error: true
         shell: pwsh
         run: |
+          try { gh repo sync ${{ github.repository_owner }}/winget-pkgs --force } catch {}
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
           ./wingetcreate.exe submit --token $env:WINGET_TOKEN "dist/winget"
+        env:
+          GH_TOKEN: ${{ env.WINGET_TOKEN }}
 
       # Optional: add MSSTORE_TENANT_ID, MSSTORE_SELLER_ID, MSSTORE_CLIENT_ID, MSSTORE_CLIENT_SECRET
       # and every release is published to Microsoft Store automatically via Microsoft Store Developer CLI.
