@@ -20,6 +20,10 @@ jobs:
     env:
       PACKAGE_ID: Net.NetSpeedBoss
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      MSSTORE_TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+      MSSTORE_SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+      MSSTORE_CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+      MSSTORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,6 +57,10 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist/winget/* -DestinationPath "dist/winget-manifests-${{ steps.v.outputs.version }}.zip"
 
+      - name: Build MSIX bundle (x64 + ARM64)
+        shell: pwsh
+        run: ./msix/make-bundle.ps1 -Version ${{ steps.v.outputs.version }} -Exe bin/NetSpeedBoss.exe -OutDir dist/msix
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -68,7 +76,7 @@ jobs:
             ```
 
             **Or download** `NetSpeedBoss-${{ steps.v.outputs.version }}-Setup.exe` below and run it.
-            No administrator rights needed. Windows 10 / 11 (64-bit).
+            No administrator rights needed. Windows 10 / 11 (x64 & ARM64).
 
             Prefer no installer? Grab the `portable.zip`, unzip and run `NetSpeedBoss.exe`.
           files: |
@@ -76,6 +84,7 @@ jobs:
             dist/NetSpeedBoss-Setup.exe
             dist/NetSpeedBoss-${{ steps.v.outputs.version }}-portable.zip
             dist/winget-manifests-${{ steps.v.outputs.version }}.zip
+            dist/msix/NetSpeedBoss-${{ steps.v.outputs.version }}.msixbundle
 
       # Optional: add a repository secret WINGET_TOKEN (classic GitHub token with public_repo scope)
       # and every release is submitted to microsoft/winget-pkgs automatically.
@@ -85,3 +94,16 @@ jobs:
         run: |
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
           ./wingetcreate.exe submit --token $env:WINGET_TOKEN "dist/winget"
+
+      # Optional: add MSSTORE_TENANT_ID, MSSTORE_SELLER_ID, MSSTORE_CLIENT_ID, MSSTORE_CLIENT_SECRET
+      # and every release is published to Microsoft Store automatically via Microsoft Store Developer CLI.
+      - name: Setup MSStore CLI
+        if: ${{ env.MSSTORE_CLIENT_ID != '' && env.MSSTORE_CLIENT_SECRET != '' && env.MSSTORE_TENANT_ID != '' && env.MSSTORE_SELLER_ID != '' }}
+        uses: microsoft/microsoft-store-apppublisher@v1.4
+
+      - name: Publish to Microsoft Store
+        if: ${{ env.MSSTORE_CLIENT_ID != '' && env.MSSTORE_CLIENT_SECRET != '' && env.MSSTORE_TENANT_ID != '' && env.MSSTORE_SELLER_ID != '' }}
+        shell: pwsh
+        run: |
+          msstore reconfigure --tenantId "$env:MSSTORE_TENANT_ID" --sellerId "$env:MSSTORE_SELLER_ID" --clientId "$env:MSSTORE_CLIENT_ID" --clientSecret "$env:MSSTORE_CLIENT_SECRET"
+          msstore publish -i "dist/msix" -id "9NP6V92XWLSH"
