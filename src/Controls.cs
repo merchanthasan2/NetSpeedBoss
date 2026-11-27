@@ -3,11 +3,33 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace NetSpeedBoss
 {
     public class DbListView : ListView
     {
+        int hoverIdx = -1;
+        HeaderSkin headerSkin;
+
+        class HeaderSkin : NativeWindow
+        {
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == 0x0014 /*WM_ERASEBKGND*/)
+                {
+                    using (Graphics g = Graphics.FromHdc(m.WParam))
+                    {
+                        Rectangle r = new Rectangle(0, 0, 4096, 64);
+                        using (SolidBrush b = new SolidBrush(Theme.CardAlt)) g.FillRectangle(b, r);
+                    }
+                    m.Result = (IntPtr)1;
+                    return;
+                }
+                base.WndProc(ref m);
+            }
+        }
+
         public DbListView()
         {
             DoubleBuffered = true;
@@ -15,17 +37,292 @@ namespace NetSpeedBoss
             FullRowSelect = true;
             HideSelection = false;
             BorderStyle = BorderStyle.None;
+            OwnerDraw = true;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            IntPtr hdr = Native.SendMessage(Handle, 0x101F /*LVM_GETHEADER*/, IntPtr.Zero, IntPtr.Zero);
+            if (hdr != IntPtr.Zero)
+            {
+                if (headerSkin == null) headerSkin = new HeaderSkin();
+                headerSkin.ReleaseHandle();
+                headerSkin.AssignHandle(hdr);
+            }
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            if (headerSkin != null) headerSkin.ReleaseHandle();
+            base.OnHandleDestroyed(e);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            ListViewHitTestInfo ht = HitTest(e.Location);
+            int idx = ht.Item != null ? ht.Item.Index : -1;
+            if (idx != hoverIdx)
+            {
+                int prev = hoverIdx;
+                hoverIdx = idx;
+                if (prev >= 0 && prev < Items.Count) Invalidate(Items[prev].Bounds);
+                if (hoverIdx >= 0 && hoverIdx < Items.Count) Invalidate(Items[hoverIdx].Bounds);
+            }
+            base.OnMouseMove(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            if (hoverIdx >= 0 && hoverIdx < Items.Count) { int p = hoverIdx; hoverIdx = -1; Invalidate(Items[p].Bounds); }
+            else hoverIdx = -1;
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnDrawColumnHeader(DrawListViewColumnHeaderEventArgs e)
+        {
+            e.DrawDefault = false;
+            using (SolidBrush bg = new SolidBrush(Theme.CardAlt))
+                e.Graphics.FillRectangle(bg, e.Bounds);
+            using (Pen border = new Pen(Theme.Border))
+                e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+            using (Pen div = new Pen(Theme.Grid))
+                e.Graphics.DrawLine(div, e.Bounds.Right - 1, e.Bounds.Top + 5, e.Bounds.Right - 1, e.Bounds.Bottom - 6);
+            TextFormatFlags flags = AlignFlag(e.Header.TextAlign) | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
+            Rectangle tr = new Rectangle(e.Bounds.X + 6, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 12), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, e.Header.Text, Font, tr, Theme.Muted, flags);
+        }
+
+        protected override void OnDrawItem(DrawListViewItemEventArgs e)
+        {
+            e.DrawDefault = false;
+            Color bg = RowBg(e.Item, e.ItemIndex);
+            Rectangle full = new Rectangle(0, e.Bounds.Y, Math.Max(ClientRectangle.Width, e.Bounds.Width), e.Bounds.Height);
+            using (SolidBrush b = new SolidBrush(bg)) e.Graphics.FillRectangle(b, full);
+        }
+
+        protected override void OnDrawSubItem(DrawListViewSubItemEventArgs e)
+        {
+            e.DrawDefault = false;
+            Color bg = RowBg(e.Item, e.ItemIndex);
+            using (SolidBrush b = new SolidBrush(bg)) e.Graphics.FillRectangle(b, e.Bounds);
+
+            Rectangle tr = new Rectangle(e.Bounds.X + 6, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 12), e.Bounds.Height);
+            if (e.ColumnIndex == 0 && SmallImageList != null && e.Item.ImageIndex >= 0 && e.Item.ImageIndex < SmallImageList.Images.Count)
+            {
+                int iy = e.Bounds.Y + Math.Max(0, (e.Bounds.Height - 16) / 2);
+                SmallImageList.Draw(e.Graphics, e.Bounds.X + 6, iy, 16, 16, e.Item.ImageIndex);
+                tr = new Rectangle(e.Bounds.X + 26, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 32), e.Bounds.Height);
+            }
+
+            Color fg = e.Item.Selected ? Theme.Ink : (e.Item.ForeColor == Theme.Muted ? Theme.Muted : Theme.Ink);
+            TextFormatFlags flags = AlignFlag(e.Header.TextAlign) | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
+            TextRenderer.DrawText(e.Graphics, e.SubItem.Text, Font, tr, fg, flags);
+        }
+
+        Color RowBg(ListViewItem item, int idx)
+        {
+            if (item.Selected) return Color.FromArgb(Theme.IsDark ? 48 : 30, Theme.Accent);
+            if (idx == hoverIdx) return Theme.Hover;
+            return idx % 2 == 1 ? Theme.RowAlt : Theme.Card;
+        }
+
+        static TextFormatFlags AlignFlag(HorizontalAlignment a)
+        {
+            if (a == HorizontalAlignment.Right) return TextFormatFlags.Right;
+            if (a == HorizontalAlignment.Center) return TextFormatFlags.HorizontalCenter;
+            return TextFormatFlags.Left;
+        }
+    }
+
+    public class ModernMenuRenderer : ToolStripProfessionalRenderer
+    {
+        public static readonly ModernMenuRenderer Instance = new ModernMenuRenderer();
+
+        class Colors : ProfessionalColorTable
+        {
+            public override Color ToolStripDropDownBackground { get { return Theme.Card; } }
+            public override Color ImageMarginGradientBegin { get { return Theme.Card; } }
+            public override Color ImageMarginGradientMiddle { get { return Theme.Card; } }
+            public override Color ImageMarginGradientEnd { get { return Theme.Card; } }
+            public override Color MenuBorder { get { return Theme.Border; } }
+            public override Color MenuItemBorder { get { return Theme.Border; } }
+            public override Color MenuItemSelected { get { return Theme.Hover; } }
+            public override Color MenuItemSelectedGradientBegin { get { return Theme.Hover; } }
+            public override Color MenuItemSelectedGradientEnd { get { return Theme.Hover; } }
+            public override Color SeparatorDark { get { return Theme.Grid; } }
+            public override Color SeparatorLight { get { return Theme.Grid; } }
+        }
+
+        public ModernMenuRenderer() : base(new Colors()) { RoundedEdges = true; }
+
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+        {
+            using (SolidBrush b = new SolidBrush(Theme.Card)) e.Graphics.FillRectangle(b, e.AffectedBounds);
+        }
+
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+        {
+            Rectangle r = new Rectangle(0, 0, e.AffectedBounds.Width - 1, e.AffectedBounds.Height - 1);
+            using (Pen p = new Pen(Theme.Border)) e.Graphics.DrawRectangle(p, r);
+        }
+
+        protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+        {
+            if (!e.Item.Selected && !e.Item.Pressed) return;
+            Rectangle r = new Rectangle(4, 1, Math.Max(4, e.Item.Width - 8), Math.Max(4, e.Item.Height - 2));
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath p = BrandArt.Round(r, 4))
+            using (SolidBrush b = new SolidBrush(e.Item.Pressed ? Color.FromArgb(Theme.IsDark ? 55 : 35, Theme.Accent) : Theme.Hover))
+                e.Graphics.FillPath(b, p);
+            e.Graphics.SmoothingMode = SmoothingMode.None;
+        }
+
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            e.TextColor = e.Item.Enabled ? Theme.Ink : Theme.Muted;
+            base.OnRenderItemText(e);
+        }
+
+        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+        {
+            int y = e.Item.Height / 2;
+            using (Pen p = new Pen(Theme.Grid)) e.Graphics.DrawLine(p, 8, y, e.Item.Width - 8, y);
+        }
+
+        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+        {
+            Rectangle r = new Rectangle(e.ImageRectangle.X - 1, e.ImageRectangle.Y - 1, e.ImageRectangle.Width + 2, e.ImageRectangle.Height + 2);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath gp = BrandArt.Round(r, 4))
+            using (SolidBrush b = new SolidBrush(Color.FromArgb(36, Theme.Accent)))
+            using (Pen p = new Pen(Theme.Accent))
+            {
+                e.Graphics.FillPath(b, gp);
+                e.Graphics.DrawPath(p, gp);
+            }
+            using (Pen cp = new Pen(Theme.Accent, 2f))
+            {
+                cp.StartCap = LineCap.Round; cp.EndCap = LineCap.Round; cp.LineJoin = LineJoin.Round;
+                float cx = r.Left + r.Width * 0.25f, cy = r.Top + r.Height * 0.52f;
+                e.Graphics.DrawLines(cp, new PointF[] {
+                    new PointF(cx, cy),
+                    new PointF(r.Left + r.Width * 0.45f, r.Top + r.Height * 0.72f),
+                    new PointF(r.Left + r.Width * 0.76f, r.Top + r.Height * 0.30f)
+                });
+            }
+            e.Graphics.SmoothingMode = SmoothingMode.None;
+        }
+
+        protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
+        {
+            e.ArrowColor = e.Item.Enabled ? Theme.Muted : Theme.Border;
+            base.OnRenderArrow(e);
         }
     }
 
     public static class Theme
     {
-        public static readonly Color Bg = Color.FromArgb(246, 247, 249);
-        public static readonly Color Card = Color.White;
-        public static readonly Color Border = Color.FromArgb(222, 225, 230);
-        public static readonly Color Muted = Color.FromArgb(105, 112, 122);
-        public static readonly Color Ink = Color.FromArgb(30, 34, 40);
-        public static readonly Color Accent = Color.FromArgb(0, 120, 212);
+        public static bool IsDark;
+        public static Color Bg = Color.FromArgb(244, 246, 249);
+        public static Color Card = Color.White;
+        public static Color CardAlt = Color.FromArgb(249, 250, 252);
+        public static Color Border = Color.FromArgb(224, 228, 234);
+        public static Color Muted = Color.FromArgb(102, 110, 122);
+        public static Color Ink = Color.FromArgb(24, 28, 35);
+        public static Color Accent = Color.FromArgb(0, 120, 212);
+        public static Color Grid = Color.FromArgb(234, 237, 242);
+        public static Color Track = Color.FromArgb(234, 237, 242);
+        public static Color Hover = Color.FromArgb(244, 247, 251);
+        public static Color RowAlt = Color.FromArgb(249, 250, 252);
+        public static Color TooltipBg = Color.FromArgb(240, 24, 28, 35);
+
+        public static bool SystemIsDark()
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    object v = k == null ? null : k.GetValue("AppsUseLightTheme");
+                    return v is int && (int)v == 0;
+                }
+            }
+            catch { return false; }
+        }
+
+        public static void Apply(DashTheme mode)
+        {
+            bool dark = mode == DashTheme.Dark || (mode == DashTheme.Auto && SystemIsDark());
+            IsDark = dark;
+            if (dark)
+            {
+                Bg = Color.FromArgb(20, 22, 26);
+                Card = Color.FromArgb(29, 32, 38);
+                CardAlt = Color.FromArgb(35, 39, 46);
+                Border = Color.FromArgb(48, 53, 63);
+                Muted = Color.FromArgb(150, 158, 170);
+                Ink = Color.FromArgb(237, 240, 245);
+                Accent = Color.FromArgb(76, 166, 255);
+                Grid = Color.FromArgb(42, 47, 56);
+                Track = Color.FromArgb(46, 52, 62);
+                Hover = Color.FromArgb(38, 43, 52);
+                RowAlt = Color.FromArgb(33, 37, 44);
+                TooltipBg = Color.FromArgb(240, 14, 16, 20);
+            }
+            else
+            {
+                Bg = Color.FromArgb(244, 246, 249);
+                Card = Color.White;
+                CardAlt = Color.FromArgb(249, 250, 252);
+                Border = Color.FromArgb(224, 228, 234);
+                Muted = Color.FromArgb(102, 110, 122);
+                Ink = Color.FromArgb(24, 28, 35);
+                Accent = Color.FromArgb(0, 120, 212);
+                Grid = Color.FromArgb(222, 227, 235);
+                Track = Color.FromArgb(234, 237, 242);
+                Hover = Color.FromArgb(244, 247, 251);
+                RowAlt = Color.FromArgb(249, 250, 252);
+                TooltipBg = Color.FromArgb(235, 33, 37, 43);
+            }
+        }
+
+        public static void DrawCard(Graphics g, Rectangle bounds, Color fill, Color border, Color? leftAccent, int radius)
+        {
+            Rectangle r = new Rectangle(bounds.X, bounds.Y, Math.Max(2, bounds.Width - 1), Math.Max(2, bounds.Height - 1));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath p = BrandArt.Round(r, radius))
+            using (SolidBrush fb = new SolidBrush(fill))
+            using (Pen bp = new Pen(border))
+            {
+                g.FillPath(fb, p);
+                if (leftAccent.HasValue)
+                {
+                    Region prev = g.Clip;
+                    g.SetClip(p);
+                    using (SolidBrush ab = new SolidBrush(leftAccent.Value))
+                        g.FillRectangle(ab, bounds.X, bounds.Y, 4, bounds.Height);
+                    g.Clip = prev;
+                }
+                g.DrawPath(bp, p);
+            }
+            g.SmoothingMode = SmoothingMode.None;
+        }
+    }
+
+    public class CardPanel : Panel
+    {
+        public int Radius = 8;
+        public CardPanel()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.ResizeRedraw, true);
+            BackColor = Theme.Card;
+            Padding = new Padding(1);
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.Clear(Parent != null ? Parent.BackColor : Theme.Bg);
+            Theme.DrawCard(e.Graphics, ClientRectangle, BackColor, Theme.Border, null, Radius);
+        }
     }
 
     /// <summary>Live line graph of download / upload history with hover read-out.</summary>
@@ -63,7 +360,7 @@ namespace NetSpeedBoss
         {
             if (App == null) return;
             Graphics g = e.Graphics;
-            g.Clear(BackColor);
+            g.Clear(Theme.Card);
             Settings s = App.S;
             int lblW = TextRenderer.MeasureText("888.8 Mbps", Font).Width + 8;
             Rectangle plot = new Rectangle(lblW, 28, Width - lblW - 14, Height - 28 - 24);
@@ -80,14 +377,16 @@ namespace NetSpeedBoss
                 if (App.AppHistRx.TryGetValue(ga.Name, out h)) apps.Add(new KeyValuePair<TrayApp.GraphApp, double[]>(ga, h));
             }
 
-            using (Pen grid = new Pen(Color.FromArgb(234, 236, 240)))
+            using (Pen grid = new Pen(Theme.Grid))
             {
+                int yStep = plot.Height < 105 ? 2 : 1;
                 for (int i = 0; i <= 4; i++)
                 {
                     int y = plot.Bottom - i * plot.Height / 4;
                     g.DrawLine(grid, plot.Left, y, plot.Right, y);
-                    TextRenderer.DrawText(g, Fmt.Speed(max * i / 4, s.Unit), Font, new Rectangle(0, y - 8, lblW - 6, 16), Theme.Muted,
-                        TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+                    if (i % yStep == 0)
+                        TextRenderer.DrawText(g, Fmt.Speed(max * i / 4, s.Unit), Font, new Rectangle(0, y - 8, lblW - 6, 16), Theme.Muted,
+                            TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
                 }
                 for (int i = 0; i <= 4; i++)
                 {
@@ -123,17 +422,36 @@ namespace NetSpeedBoss
                 int ago = (int)Math.Round((plot.Right - hoverX) / step);
                 ago = Math.Max(0, Math.Min(n - 1, ago));
                 float x = plot.Right - ago * step;
-                using (Pen p = new Pen(Color.FromArgb(160, 160, 170)) { DashStyle = DashStyle.Dot })
+                using (Pen p = new Pen(Theme.Muted) { DashStyle = DashStyle.Dot })
                     g.DrawLine(p, x, plot.Top, x, plot.Bottom);
-                string txt = "↓ " + Fmt.Speed(App.Hist(App.HistRx, ago), s.Unit) + "   ↑ " + Fmt.Speed(App.Hist(App.HistTx, ago), s.Unit) +
-                             "   (" + (ago * s.IntervalMs / 1000.0).ToString("0.#") + "s ago)";
+
+                double rxv = App.Hist(App.HistRx, ago), txv = App.Hist(App.HistTx, ago);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                DrawHoverDot(g, x, (float)(plot.Bottom - Math.Min(max, rxv) / max * plot.Height), s.DownColor);
+                DrawHoverDot(g, x, (float)(plot.Bottom - Math.Min(max, txv) / max * plot.Height), s.UpColor);
+                foreach (KeyValuePair<TrayApp.GraphApp, double[]> kv in apps)
+                    DrawHoverDot(g, x, (float)(plot.Bottom - Math.Min(max, App.Hist(kv.Value, ago)) / max * plot.Height), kv.Key.Color);
+                g.SmoothingMode = SmoothingMode.None;
+
+                string when = ago == 0 ? "now" : (ago * s.IntervalMs / 1000.0).ToString("0.#") + "s ago";
+                string txt = "↓ " + Fmt.Speed(rxv, s.Unit) + "   ↑ " + Fmt.Speed(txv, s.Unit) + "   (" + when + ")";
                 foreach (KeyValuePair<TrayApp.GraphApp, double[]> kv in apps)
                     txt += "\n" + kv.Key.Name + "  ↓ " + Fmt.Speed(App.Hist(kv.Value, ago), s.Unit);
                 Size ts = TextRenderer.MeasureText(txt, Font);
-                int bx = (int)Math.Min(x + 8, plot.Right - ts.Width - 8);
-                Rectangle box = new Rectangle(bx, plot.Top + 6, ts.Width + 8, ts.Height + 6);
-                using (SolidBrush b = new SolidBrush(Color.FromArgb(235, 33, 37, 43))) g.FillRectangle(b, box);
+                int bx = Math.Max(plot.Left + 4, (int)Math.Min(x + 10, plot.Right - ts.Width - 16));
+                Rectangle box = new Rectangle(bx, plot.Top + 6, ts.Width + 14, ts.Height + 8);
+                Theme.DrawCard(g, box, Theme.TooltipBg, Theme.Border, null, 6);
                 TextRenderer.DrawText(g, txt, Font, box, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+        }
+
+        static void DrawHoverDot(Graphics g, float x, float y, Color c)
+        {
+            using (SolidBrush halo = new SolidBrush(Theme.Card))
+            using (SolidBrush dot = new SolidBrush(c))
+            {
+                g.FillEllipse(halo, x - 4.5f, y - 4.5f, 9f, 9f);
+                g.FillEllipse(dot, x - 3f, y - 3f, 6f, 6f);
             }
         }
 
@@ -260,32 +578,34 @@ namespace NetSpeedBoss
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
-            g.Clear(BackColor);
+            g.Clear(Parent != null ? Parent.BackColor : Theme.Bg);
+            Theme.DrawCard(g, ClientRectangle, Theme.Card, Theme.Border, null, 8);
             if (App == null) return;
             Settings s = App.S;
-            TextRenderer.DrawText(g, "Top downloading apps", bold, new Rectangle(8, 0, Width, Head), Theme.Ink,
+            TextRenderer.DrawText(g, "Top downloading apps", bold, new Rectangle(10, 0, Width, Head), Theme.Ink,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
             string hint = flash != null && DateTime.UtcNow < flashUntil ? flash : "Tick an app to see it on the graph";
-            TextRenderer.DrawText(g, hint, Font, new Rectangle(0, 0, Width - 10, Head), Theme.Muted,
+            TextRenderer.DrawText(g, hint, Font, new Rectangle(0, 0, Width - 12, Head), Theme.Muted,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Right);
+            using (Pen hp = new Pen(Theme.Grid)) g.DrawLine(hp, 1, Head - 1, Width - 2, Head - 1);
             linkRect = Rectangle.Empty;
 
             if (!App.Procs.EtwActive)
             {
-                Rectangle box = new Rectangle(8, Head + 6, Width - 16, Height - Head - 14);
+                Rectangle box = new Rectangle(10, Head + 6, Width - 20, Height - Head - 14);
                 TextRenderer.DrawText(g, "Windows only shares per-app speeds with apps running as administrator.", Font,
                     new Point(box.Left + 2, box.Top + 8), Theme.Muted);
-                string link = "Restart NetSpeed Boss as administrator →";
+                string link = "Restart NetSpeed Boss as administrator \u2192";
                 Size ls = TextRenderer.MeasureText(link, bold);
                 linkRect = new Rectangle(box.Left + 2, box.Top + 34, ls.Width, ls.Height);
                 TextRenderer.DrawText(g, link, bold, linkRect.Location, Theme.Accent);
-                TextRenderer.DrawText(g, "Tip: Settings → \"Start with administrator rights\" skips this prompt at every sign-in.", Font,
+                TextRenderer.DrawText(g, "Tip: Settings \u2192 \"Start as Administrator at sign-in\" skips this prompt at every sign-in.", Font,
                     new Point(box.Left + 2, box.Top + 62), Theme.Muted);
                 return;
             }
             if (rows.Count == 0)
             {
-                TextRenderer.DrawText(g, "No apps are downloading right now.", Font, new Point(10, Head + 10), Theme.Muted);
+                TextRenderer.DrawText(g, "No apps are downloading right now.", Font, new Point(12, Head + 10), Theme.Muted);
                 return;
             }
 
@@ -297,13 +617,13 @@ namespace NetSpeedBoss
                 TrayApp.AppSeries a = rows[i];
                 Rectangle r = RowRect(i);
                 TrayApp.GraphApp ga = App.FindGraphed(a.Name);
-                if (i == hover) using (SolidBrush hb = new SolidBrush(Color.FromArgb(245, 247, 250))) g.FillRectangle(hb, r);
+                if (i == hover) using (SolidBrush hb = new SolidBrush(Theme.Hover)) g.FillRectangle(hb, 1, r.Top, Width - 2, r.Height);
 
                 int x = 10;
                 CheckBoxRenderer.DrawCheckBox(g, new Point(x, r.Top + (RowH - 13) / 2),
                     ga != null ? System.Windows.Forms.VisualStyles.CheckBoxState.CheckedNormal : System.Windows.Forms.VisualStyles.CheckBoxState.UncheckedNormal);
                 x += 22;
-                Color c = ga != null ? ga.Color : Color.FromArgb(200, 205, 212);
+                Color c = ga != null ? ga.Color : Theme.Border;
                 using (SolidBrush cb = new SolidBrush(c)) g.FillRectangle(cb, x, r.Top + RowH / 2 - 2, 12, 4);
                 x += 18;
                 Image ic = IconFor == null ? null : IconFor(a.Path);
@@ -325,9 +645,9 @@ namespace NetSpeedBoss
                 int bx = x + nameW + 10, bw = dnR.Left - bx - 14;
                 if (bw > 20)
                 {
-                    using (SolidBrush track = new SolidBrush(Color.FromArgb(238, 240, 243))) g.FillRectangle(track, bx, r.Top + RowH / 2 - 2, bw, 4);
+                    using (SolidBrush track = new SolidBrush(Theme.Track)) g.FillRectangle(track, bx, r.Top + RowH / 2 - 2, bw, 5);
                     int fw = (int)(bw * Math.Min(1, a.Rx / maxRx));
-                    using (SolidBrush fill = new SolidBrush(ga != null ? ga.Color : s.DownColor)) g.FillRectangle(fill, bx, r.Top + RowH / 2 - 2, fw, 4);
+                    using (SolidBrush fill = new SolidBrush(ga != null ? ga.Color : s.DownColor)) g.FillRectangle(fill, bx, r.Top + RowH / 2 - 2, fw, 5);
                 }
             }
         }
@@ -397,15 +717,15 @@ namespace NetSpeedBoss
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
-            g.Clear(BackColor);
-            using (Pen p = new Pen(Theme.Border)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+            g.Clear(Parent != null ? Parent.BackColor : Theme.Bg);
+            Theme.DrawCard(g, ClientRectangle, Theme.Card, Theme.Border, null, 8);
 
             TextRenderer.DrawText(g, "Top apps", bold, new Rectangle(10, 0, Width - 20, Head), Theme.Ink,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
             if (span.Length > 0)
                 TextRenderer.DrawText(g, span, small, new Rectangle(90, 0, Width - 100, Head), Theme.Muted,
                     TextFormatFlags.VerticalCenter | TextFormatFlags.Right | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
-            using (Pen lp = new Pen(Color.FromArgb(236, 238, 242))) g.DrawLine(lp, 1, Head - 1, Width - 2, Head - 1);
+            using (Pen lp = new Pen(Theme.Grid)) g.DrawLine(lp, 1, Head - 1, Width - 2, Head - 1);
             linkRect = Rectangle.Empty;
 
             if (rows.Count == 0)
@@ -442,7 +762,7 @@ namespace NetSpeedBoss
             {
                 UsageAppRow r = rows[i];
                 Rectangle rr = RowRect(i);
-                if (i == hover) using (SolidBrush hb = new SolidBrush(Color.FromArgb(245, 247, 250))) g.FillRectangle(hb, 1, rr.Top, Width - 2, rr.Height);
+                if (i == hover) using (SolidBrush hb = new SolidBrush(Theme.Hover)) g.FillRectangle(hb, 1, rr.Top, Width - 2, rr.Height);
 
                 int x = 10;
                 TextRenderer.DrawText(g, (i + 1).ToString(), small, new Rectangle(x, rr.Top, 18, RowH), Theme.Muted,
@@ -469,7 +789,7 @@ namespace NetSpeedBoss
                 int bx = x + nameW + 8, bw = rightEdge - bx;
                 if (bw > 24)
                 {
-                    using (SolidBrush track = new SolidBrush(Color.FromArgb(238, 240, 243))) g.FillRectangle(track, bx, rr.Top + RowH / 2 - 3, bw, 6);
+                    using (SolidBrush track = new SolidBrush(Theme.Track)) g.FillRectangle(track, bx, rr.Top + RowH / 2 - 3, bw, 6);
                     int fw = (int)Math.Round(bw * Math.Min(1.0, (double)r.Total / maxTot));
                     int dw = r.Total > 0 ? (int)Math.Round(fw * ((double)r.Down / r.Total)) : 0;
                     if (dw > 0) using (SolidBrush db = new SolidBrush(dnCol)) g.FillRectangle(db, bx, rr.Top + RowH / 2 - 3, dw, 6);
@@ -520,7 +840,7 @@ namespace NetSpeedBoss
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
-            g.Clear(BackColor);
+            g.Clear(Theme.Card);
             if (Usage == null) return;
             Rectangle plot = Plot();
             if (plot.Width < 30 || plot.Height < 30) return;
@@ -530,7 +850,7 @@ namespace NetSpeedBoss
             for (int i = 0; i < Days; i++) { v[i] = Usage.Day(first.AddDays(i)); max = Math.Max(max, v[i][0] + v[i][1]); }
             max = NiceSize(max);
 
-            using (Pen grid = new Pen(Color.FromArgb(234, 236, 240)))
+            using (Pen grid = new Pen(Theme.Grid))
                 for (int i = 0; i <= 4; i++)
                 {
                     int y = plot.Bottom - i * plot.Height / 4;
@@ -543,7 +863,7 @@ namespace NetSpeedBoss
             float bw = Math.Max(2, slot * 0.7f);
             using (SolidBrush bd = new SolidBrush(S.DownColor))
             using (SolidBrush bu = new SolidBrush(S.UpColor))
-            using (SolidBrush hb = new SolidBrush(Color.FromArgb(18, 0, 0, 0)))
+            using (SolidBrush hb = new SolidBrush(Theme.Hover))
                 for (int i = 0; i < Days; i++)
                 {
                     float x = plot.Left + i * slot + (slot - bw) / 2;
@@ -563,8 +883,10 @@ namespace NetSpeedBoss
                 string t = d.ToString("ddd d MMM") + ":  ↓ " + Fmt.Size(v[hover][0]) + "  ↑ " + Fmt.Size(v[hover][1]) +
                            "  = " + Fmt.Size(v[hover][0] + v[hover][1]);
                 Size ts = TextRenderer.MeasureText(t, Font);
-                Rectangle box = new Rectangle(plot.Left + 6, plot.Top, ts.Width + 10, ts.Height + 6);
-                using (SolidBrush b = new SolidBrush(Color.FromArgb(235, 33, 37, 43))) g.FillRectangle(b, box);
+                int barCenter = (int)(plot.Left + (hover + 0.5f) * slot);
+                int bx = Math.Max(plot.Left + 4, Math.Min(barCenter - (ts.Width + 14) / 2, plot.Right - ts.Width - 18));
+                Rectangle box = new Rectangle(bx, plot.Top + 2, ts.Width + 14, ts.Height + 8);
+                Theme.DrawCard(g, box, Theme.TooltipBg, Theme.Border, null, 6);
                 TextRenderer.DrawText(g, t, Font, box, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             }
         }
@@ -580,7 +902,7 @@ namespace NetSpeedBoss
         }
     }
 
-    /// <summary>A white rounded-looking card with a title and a big value.</summary>
+    /// <summary>A rounded card with an accent stripe, title, value, and subtitle.</summary>
     public class StatCard : Panel
     {
         readonly Label title = new Label(), value = new Label(), sub = new Label();
@@ -588,25 +910,34 @@ namespace NetSpeedBoss
 
         public StatCard(string t)
         {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.ResizeRedraw, true);
             BackColor = Theme.Card;
-            Padding = new Padding(12, 8, 12, 8);
+            Padding = new Padding(14, 10, 12, 8);
             Margin = new Padding(6);
-            title.Text = t; title.ForeColor = Theme.Muted; title.Font = new Font("Segoe UI", 8.5f); title.Dock = DockStyle.Top; title.Height = 18;
-            value.Font = new Font("Segoe UI Semibold", 15f); value.ForeColor = Theme.Ink; value.Dock = DockStyle.Top; value.Height = 32;
-            sub.Font = new Font("Segoe UI", 8.5f); sub.ForeColor = Theme.Muted; sub.Dock = DockStyle.Top; sub.Height = 18;
+            title.Text = t; title.ForeColor = Theme.Muted; title.BackColor = Color.Transparent; title.Font = new Font("Segoe UI", 8.5f); title.Dock = DockStyle.Top; title.Height = 18;
+            value.Font = new Font("Segoe UI Semibold", 15.5f); value.ForeColor = Theme.Ink; value.BackColor = Color.Transparent; value.Dock = DockStyle.Top; value.Height = 32;
+            sub.Font = new Font("Segoe UI", 8.5f); sub.ForeColor = Theme.Muted; sub.BackColor = Color.Transparent; sub.Dock = DockStyle.Top; sub.Height = 18;
             Controls.Add(sub); Controls.Add(value); Controls.Add(title);
-            Height = 86;
+            Height = 88;
         }
 
         public void Title(string t) { if (title.Text != t) title.Text = t; }
 
         public void Set(string v, string s) { if (value.Text != v) value.Text = v; if (sub.Text != s) sub.Text = s; }
 
+        public void SyncTheme()
+        {
+            BackColor = Theme.Card;
+            title.ForeColor = Theme.Muted;
+            value.ForeColor = Theme.Ink;
+            sub.ForeColor = Theme.Muted;
+            Invalidate();
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
-            base.OnPaint(e);
-            using (Pen p = new Pen(Theme.Border)) e.Graphics.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
-            using (SolidBrush b = new SolidBrush(AccentColor)) e.Graphics.FillRectangle(b, 0, 0, 3, Height);
+            e.Graphics.Clear(Parent != null ? Parent.BackColor : Theme.Bg);
+            Theme.DrawCard(e.Graphics, ClientRectangle, Theme.Card, Theme.Border, AccentColor, 8);
         }
     }
 }

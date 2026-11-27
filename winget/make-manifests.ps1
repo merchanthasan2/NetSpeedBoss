@@ -53,7 +53,7 @@ ManifestVersion: 1.6.0
 PackageIdentifier: $Id
 PackageVersion: $Version
 PackageLocale: en-US
-Publisher: NetSpeed Boss
+Publisher: Quantum Step
 PublisherUrl: https://github.com/$($Repo.Split('/')[0])
 PublisherSupportUrl: https://github.com/$Repo/issues
 PackageName: NetSpeed Boss

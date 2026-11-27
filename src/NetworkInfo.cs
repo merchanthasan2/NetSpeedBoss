@@ -75,6 +75,16 @@ namespace NetSpeedBoss
             rows.Add(new SpecRow("Connection", adapterVal, Brands.Detect(primary.Description)));
             rows.Add(new SpecRow("Local IP", (ipv4.Length > 0 ? ipv4 : "-") + (ipv6.Length > 0 ? "   \u00B7   " + ipv6 : ""), null));
             rows.Add(new SpecRow("Gateway / DNS", (gw.Length > 0 ? gw : "-") + "   \u00B7   DNS " + (dns.Length > 0 ? dns : "-"), null));
+
+            List<string> wans = new List<string>();
+            foreach (AdapterInfo a in adapters)
+            {
+                if (!a.HasGateway) continue;
+                string ip = !string.IsNullOrEmpty(a.IPv4) ? a.IPv4 : NetMonitor.GetIPv4(a.Id);
+                wans.Add(a.Name + (ip.Length > 0 ? " (" + ip + ")" : ""));
+            }
+            if (wans.Count >= 2)
+                rows.Add(new SpecRow("Load balancing", wans.Count + " active WANs:  " + string.Join("  +  ", wans.ToArray()), null));
             return rows;
         }
 

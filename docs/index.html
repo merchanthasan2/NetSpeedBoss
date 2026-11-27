@@ -240,7 +240,7 @@ footer a:hover{color:var(--paper)}
 <main>
   <div class="wrap hero">
     <div>
-      <div class="eyebrow rv" style="--d:0">Free &amp; open source · Windows 10 / 11 · by Quantum Step · <span id="rel-ver">v1.1.1</span></div>
+      <div class="eyebrow rv" style="--d:0">Free &amp; open source · Windows 10 / 11 · by Quantum Step · <span id="rel-ver">v1.3.1</span></div>
       <h1 class="rv" style="--d:1">Your internet speed, <em>right on the taskbar.</em></h1>
       <p class="lede rv" style="--d:2">NetSpeed Boss sits next to your clock and shows exactly how fast you're downloading and uploading, second by second. One glance, no guessing.</p>
       <div class="cta rv" style="--d:3">
@@ -248,7 +248,7 @@ footer a:hover{color:var(--paper)}
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
           Download Installer (.exe)
         </a>
-        <a class="btn btn-ghost" id="hero-zip-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/download/v1.1.1/NetSpeedBoss-1.1.1-portable.zip">
+        <a class="btn btn-ghost" id="hero-zip-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/download/v1.3.1/NetSpeedBoss-1.3.1-portable.zip">
           Portable (.zip)
         </a>
         <a class="btn btn-ghost" href="https://github.com/merchanthasan2/NetSpeedBoss" target="_blank" rel="noopener">
@@ -311,7 +311,7 @@ footer a:hover{color:var(--paper)}
         <div class="dl-card">
           <div class="top"><h4>Portable ZIP</h4><span class="badge live">Ready</span></div>
           <p>Single executable (~200 KB) with zero installation. Unzip anywhere and run <code>NetSpeedBoss.exe</code>.</p>
-          <a class="dl-link" id="card-zip-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/download/v1.1.1/NetSpeedBoss-1.1.1-portable.zip">Download portable.zip</a>
+          <a class="dl-link" id="card-zip-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/download/v1.3.1/NetSpeedBoss-1.3.1-portable.zip">Download portable.zip</a>
         </div>
         <div class="dl-card">
           <div class="top"><h4>Scoop</h4><span class="badge live">Live</span></div>
@@ -379,13 +379,23 @@ footer a:hover{color:var(--paper)}
         </div>
         <div class="f wide rv">
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#46d778" stroke-width="2" stroke-linecap="round"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M9 20h6"/></svg></div>
-          <h3>Floating meter, too</h3>
-          <p>Prefer it somewhere else? Turn on a small always-on-top meter with a mini graph. It snaps to screen edges and can be made click-through.</p>
+          <h3>Floating meter &amp; Gaming HUD</h3>
+          <p>Metal-style transparent overlay that auto-shows in Windows GPU games (DX9–DX12, Vulkan, OpenGL) with RAG-colored FPS, VRAM, GPU temp/fan, multi-core CPU, and live game server ping.</p>
+        </div>
+        <div class="f wide rv">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#ffa53c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l3-7 4 14 3-7h2"/></svg></div>
+          <h3>Dual-WAN load balancing &amp; Speedtest</h3>
+          <p>Automatically sums dual internet links, shows live per-adapter speeds and gateways, and includes a built-in multi-stream Speedtest to measure combined bandwidth.</p>
+        </div>
+        <div class="f wide rv">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#46d778" stroke-width="2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg></div>
+          <h3>System, Hardware &amp; ISP info</h3>
+          <p>Live CPU, GPU &amp; memory cards plus organized hardware, storage, BIOS, network, and public IP/ISP details with crisp manufacturer logos.</p>
         </div>
         <div class="f wide rv">
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#ffa53c" stroke-width="2" stroke-linecap="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg></div>
-          <h3>Light, private, honest</h3>
-          <p>A tiny native app using almost no CPU. Your data stays on your PC, with no account, telemetry or ads. MIT-licensed source on GitHub.</p>
+          <h3>Light &amp; Dark themes, private</h3>
+          <p>Follows Windows Light/Dark mode automatically. Your data stays on your PC, with zero accounts, telemetry or ads. MIT-licensed by Quantum Step.</p>
         </div>
       </div>
     </div>
@@ -396,8 +406,12 @@ footer a:hover{color:var(--paper)}
       <div class="kicker rv">The dashboard</div>
       <h2 class="rv">Double-click for the full picture.</h2>
       <div class="shot duo">
-        <figure class="rv"><img src="images/dashboard-live.png" alt="NetSpeed Boss dashboard showing current, peak and session speed with a two-minute speed history graph" loading="lazy" width="900" height="418"></figure>
-        <figure class="rv"><img src="images/settings-taskbar.png" alt="Taskbar settings: font, size, bold text and colors" loading="lazy" width="900" height="285"></figure>
+        <figure class="rv"><img src="images/dashboard-live.png" alt="NetSpeed Boss Live tab in Dark mode with speed history, Speedtest button, ping pill, and per-adapter bandwidth" loading="lazy" width="960" height="680"><figcaption>Live speed graph, Speedtest, ping &amp; multi-WAN adapter breakdown</figcaption></figure>
+        <figure class="rv"><img src="images/gaming-hud.png" alt="Gaming HUD tab with transparent background preview, RAG thresholds, custom colors, VRAM and multi-core CPU bars" loading="lazy" width="960" height="740"><figcaption>Gaming HUD with background-only transparency &amp; RAG colors</figcaption></figure>
+      </div>
+      <div class="shot duo" style="margin-top:28px">
+        <figure class="rv"><img src="images/system-info.png" alt="System tab with CPU, GPU, and memory utilization cards plus Hardware, Network &amp; ISP, and Operating System details" loading="lazy" width="960" height="720"><figcaption>System, hardware &amp; ISP details with official brand logos</figcaption></figure>
+        <figure class="rv"><img src="images/settings-taskbar.png" alt="Settings tab showing Light/Dark theme, Administrator auto-start, and taskbar meter options" loading="lazy" width="960" height="600"><figcaption>Light/Dark theme, admin autostart &amp; taskbar customization</figcaption></figure>
       </div>
       <div class="note rv">
         <div class="ic">!</div>
@@ -433,7 +447,7 @@ footer a:hover{color:var(--paper)}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
         Download Installer (.exe)
       </a>
-      <a class="btn btn-ghost" id="final-zip-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/download/v1.1.1/NetSpeedBoss-1.1.1-portable.zip">
+      <a class="btn btn-ghost" id="final-zip-dl" href="https://github.com/merchanthasan2/NetSpeedBoss/releases/download/v1.3.1/NetSpeedBoss-1.3.1-portable.zip">
         Portable (.zip)
       </a>
       <a class="btn btn-ghost" href="https://github.com/merchanthasan2/NetSpeedBoss" target="_blank" rel="noopener">

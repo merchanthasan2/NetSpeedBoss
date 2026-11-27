@@ -21,19 +21,31 @@ $v4 = "$Version.0"
 using System.Reflection;
 [assembly: AssemblyTitle("NetSpeed Boss")]
 [assembly: AssemblyProduct("NetSpeed Boss")]
+[assembly: AssemblyCompany("Quantum Step")]
 [assembly: AssemblyDescription("Real-time network speed meter, per-app traffic and data usage monitor")]
-[assembly: AssemblyCopyright("Copyright (c) NetSpeed Boss contributors. MIT License.")]
+[assembly: AssemblyCopyright("Copyright (c) Quantum Step. MIT License.")]
 [assembly: AssemblyVersion("$v4")]
 [assembly: AssemblyFileVersion("$v4")]
 [assembly: AssemblyInformationalVersion("$Version")]
 "@ | Set-Content (Join-Path $obj 'AssemblyInfo.cs') -Encoding utf8
 
 $files = @(Get-ChildItem $src -Filter *.cs | ForEach-Object { $_.FullName }) + (Join-Path $obj 'AssemblyInfo.cs')
+$resArgs = @()
+$logoDir = Join-Path $root 'assets\logos'
+if (-not (Test-Path $logoDir)) {
+    $sync = Join-Path $root 'tools\sync-logos.ps1'
+    if (Test-Path $sync) { & $sync }
+}
+if (Test-Path $logoDir) {
+    foreach ($png in Get-ChildItem $logoDir -Filter *.png) {
+        $resArgs += "/resource:$($png.FullName),NetSpeedBoss.Logos.$($png.Name)"
+    }
+}
 $exe = Join-Path $out 'NetSpeedBoss.exe'
 & $csc /nologo /target:winexe /platform:anycpu /optimize+ /out:"$exe" `
     /win32icon:"$ico" /win32manifest:"$(Join-Path $src 'app.manifest')" `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Management.dll `
-    $files
+    $resArgs $files
 if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 Write-Host "Built $exe ($Version)"
 

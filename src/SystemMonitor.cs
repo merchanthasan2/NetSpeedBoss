@@ -75,6 +75,8 @@ namespace NetSpeedBoss
             Add("realtek", new BrandStyle("realtek", "Realtek", C(44, 91, 168), C(20, 50, 110), Color.White));
             Add("killer", new BrandStyle("killer", "Killer", C(180, 20, 30), C(100, 0, 10), Color.White));
             Add("broadcom", new BrandStyle("broadcom", "Broadcom", C(204, 9, 47), C(130, 0, 20), Color.White));
+            Add("american megatrends", new BrandStyle("ami", "AMI", C(52, 65, 85), C(28, 36, 48), Color.White));
+            Add("ami", new BrandStyle("ami", "AMI", C(52, 65, 85), C(28, 36, 48), Color.White));
             Add("windows", new BrandStyle("windows", "Windows", C(0, 120, 212), C(0, 70, 150), Color.White));
         }
 
@@ -150,6 +152,8 @@ namespace NetSpeedBoss
         public double BaseGhz;
 
         public List<GpuInfo> Gpus = new List<GpuInfo>();
+        public readonly Dictionary<int, double> PidGpu3d = new Dictionary<int, double>();
+        public readonly Dictionary<int, string> PidGpuLuid = new Dictionary<int, string>();
         bool gpusEnumerated;
         Dictionary<string, CounterSample> prevEngine = new Dictionary<string, CounterSample>();
         bool gpuCountersMissing;
@@ -204,6 +208,8 @@ namespace NetSpeedBoss
             try
             {
                 Dictionary<string, Dictionary<string, double>> perLuidType = new Dictionary<string, Dictionary<string, double>>();
+                Dictionary<int, double> pid3d = new Dictionary<int, double>();
+                Dictionary<int, string> pidLuid = new Dictionary<int, string>();
                 Dictionary<string, CounterSample> now = new Dictionary<string, CounterSample>();
                 InstanceDataCollectionCollection all = new PerformanceCounterCategory("GPU Engine").ReadCategory();
                 InstanceDataCollection util = all["utilization percentage"];
@@ -223,6 +229,15 @@ namespace NetSpeedBoss
                         double cur;
                         t.TryGetValue(type, out cur);
                         t[type] = cur + v;
+
+                        int pid = ParsePid(inst);
+                        if (pid > 4 && (type.IndexOf("3D", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                        type.IndexOf("Compute", StringComparison.OrdinalIgnoreCase) >= 0))
+                        {
+                            double pv;
+                            pid3d.TryGetValue(pid, out pv);
+                            if (v > pv) { pid3d[pid] = Math.Min(100, v); pidLuid[pid] = luid; }
+                        }
                     }
                 bool first = prevEngine.Count == 0;
                 prevEngine = now;
@@ -238,6 +253,12 @@ namespace NetSpeedBoss
                 catch { }
 
                 if (first) return;
+                lock (PidGpu3d)
+                {
+                    PidGpu3d.Clear(); PidGpuLuid.Clear();
+                    foreach (KeyValuePair<int, double> kv in pid3d) PidGpu3d[kv.Key] = kv.Value;
+                    foreach (KeyValuePair<int, string> kv in pidLuid) PidGpuLuid[kv.Key] = kv.Value;
+                }
                 foreach (GpuInfo g in Gpus)
                 {
                     Dictionary<string, double> t;
@@ -262,6 +283,13 @@ namespace NetSpeedBoss
 
         static readonly Regex LuidRx = new Regex(@"luid_0x([0-9a-fA-F]{8})_0x([0-9a-fA-F]{8})", RegexOptions.Compiled);
         static readonly Regex TypeRx = new Regex(@"engtype_(.*)$", RegexOptions.Compiled);
+        static readonly Regex PidRx = new Regex(@"^pid_(\d+)_", RegexOptions.Compiled);
+        static int ParsePid(string inst)
+        {
+            Match m = PidRx.Match(inst);
+            int pid;
+            return m.Success && int.TryParse(m.Groups[1].Value, out pid) ? pid : 0;
+        }
         static string ParseLuid(string inst)
         {
             Match m = LuidRx.Match(inst);
@@ -361,6 +389,8 @@ namespace NetSpeedBoss
         public double BaseGhz;
         public BrandStyle CpuBrand;
         public List<SpecRow> Rows = new List<SpecRow>();
+        public List<SpecRow> HardwareRows = new List<SpecRow>();
+        public List<SpecRow> OsRows = new List<SpecRow>();
         public string MemSummary = "";
 
         static List<ManagementObject> Query(string q) { return Query(null, q); }
@@ -422,8 +452,12 @@ namespace NetSpeedBoss
             foreach (ManagementObject o in Query("SELECT Manufacturer, Product FROM Win32_BaseBoard")) { boardMfr = S(o, "Manufacturer"); board = S(o, "Product"); }
             bool oemJunk = devModel.Length == 0 || Regex.IsMatch(devModel + devMfr, "System Product Name|To Be Filled|Default string|System manufacturer", RegexOptions.IgnoreCase);
             string device = oemJunk ? "Custom-built PC" : (CleanVendor(devMfr) + " " + devModel).Trim();
-            si.Rows.Add(new SpecRow("Device", device, Brands.Detect(oemJunk ? boardMfr : devMfr)));
-            si.Rows.Add(new SpecRow("Computer name", Environment.MachineName, null));
+            SpecRow devRow = new SpecRow("Device", device, Brands.Detect(oemJunk ? boardMfr : devMfr));
+            SpecRow nameRow = new SpecRow("Computer name", Environment.MachineName, null);
+            si.Rows.Add(devRow);
+            si.Rows.Add(nameRow);
+            si.HardwareRows.Add(devRow);
+            si.OsRows.Add(nameRow);
 
             // cpu
             foreach (ManagementObject o in Query("SELECT Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed FROM Win32_Processor"))
@@ -436,18 +470,24 @@ namespace NetSpeedBoss
                 try { si.CpuName = CleanCpu((string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString", "")); } catch { }
             si.CpuBrand = Brands.Detect(si.CpuName, si.CpuVendor) ?? Brands.Generic(si.CpuName);
             si.CpuSeries = Series(si.CpuName);
-            si.Rows.Add(new SpecRow("Processor", si.CpuName + (si.Cores > 0 ? "   \u00B7   " + si.Cores + " cores, " + si.Threads + " threads" : "") +
-                (si.BaseGhz > 0 ? "   \u00B7   " + si.BaseGhz.ToString("0.00", CultureInfo.InvariantCulture) + " GHz base" : ""), si.CpuBrand));
+            SpecRow cpuRow = new SpecRow("Processor", si.CpuName + (si.Cores > 0 ? "   \u00B7   " + si.Cores + " cores, " + si.Threads + " threads" : "") +
+                (si.BaseGhz > 0 ? "   \u00B7   " + si.BaseGhz.ToString("0.00", CultureInfo.InvariantCulture) + " GHz base" : ""), si.CpuBrand);
+            si.Rows.Add(cpuRow);
+            si.HardwareRows.Add(cpuRow);
 
             // gpu(s)
             if (gpus.Count == 0)
                 foreach (ManagementObject o in Query("SELECT Name FROM Win32_VideoController"))
-                    si.Rows.Add(new SpecRow("Graphics", S(o, "Name"), Brands.Detect(S(o, "Name")) ?? Brands.Generic(S(o, "Name"))));
+                {
+                    SpecRow gr = new SpecRow("Graphics", S(o, "Name"), Brands.Detect(S(o, "Name")) ?? Brands.Generic(S(o, "Name")));
+                    si.Rows.Add(gr); si.HardwareRows.Add(gr);
+                }
             for (int i = 0; i < gpus.Count; i++)
             {
                 GpuInfo g = gpus[i];
                 string kind = g.Vram >= 512L * 1048576 ? Gb(g.Vram) + " dedicated memory" : "integrated, shares system memory";
-                si.Rows.Add(new SpecRow(gpus.Count > 1 ? "Graphics " + (i + 1) : "Graphics", g.Name + "   \u00B7   " + kind, g.Brand));
+                SpecRow gr = new SpecRow(gpus.Count > 1 ? "Graphics " + (i + 1) : "Graphics", g.Name + "   \u00B7   " + kind, g.Brand);
+                si.Rows.Add(gr); si.HardwareRows.Add(gr);
             }
 
             // memory
@@ -468,7 +508,8 @@ namespace NetSpeedBoss
                 string v = si.MemSummary + (speed > 0 ? "   \u00B7   " + speed + " MT/s" + (rated > speed ? " (rated " + rated + ")" : "") : "") +
                            (sticks > 1 ? "   \u00B7   " + sticks + " \u00D7 " + Gb(total / sticks) : "") +
                            (memMfr.Length > 0 && Brands.Detect(memMfr) == null ? "   \u00B7   " + memMfr : "");
-                si.Rows.Add(new SpecRow("Memory", v, Brands.Detect(memMfr)));
+                SpecRow mr = new SpecRow("Memory", v, Brands.Detect(memMfr));
+                si.Rows.Add(mr); si.HardwareRows.Add(mr);
             }
 
             // storage
@@ -482,25 +523,37 @@ namespace NetSpeedBoss
                     BrandStyle db = Brands.Detect(name);
                     if (db == null && Regex.IsMatch(name, @"^CT\d", RegexOptions.IgnoreCase)) db = Brands.Detect("crucial");   // Crucial model numbers
                     if (db == null && Regex.IsMatch(name, @"^(MZ|MZV)", RegexOptions.IgnoreCase)) db = Brands.Detect("samsung");
-                    si.Rows.Add(new SpecRow("Storage", name + "   \u00B7   " + Gb(L(o, "Size")) + "   \u00B7   " + kind.Trim(), db));
+                    SpecRow sr = new SpecRow("Storage", name + "   \u00B7   " + Gb(L(o, "Size")) + "   \u00B7   " + kind.Trim(), db);
+                    si.Rows.Add(sr); si.HardwareRows.Add(sr);
                 }
             else
                 foreach (ManagementObject o in Query("SELECT Model, Size FROM Win32_DiskDrive"))
-                    si.Rows.Add(new SpecRow("Storage", S(o, "Model") + "   \u00B7   " + Gb(L(o, "Size")), Brands.Detect(S(o, "Model"))));
+                {
+                    SpecRow sr = new SpecRow("Storage", S(o, "Model") + "   \u00B7   " + Gb(L(o, "Size")), Brands.Detect(S(o, "Model")));
+                    si.Rows.Add(sr); si.HardwareRows.Add(sr);
+                }
 
             // motherboard + bios
-            if (board.Length > 0) si.Rows.Add(new SpecRow("Motherboard", (CleanVendor(boardMfr) + " " + board).Trim(), Brands.Detect(boardMfr)));
+            if (board.Length > 0)
+            {
+                SpecRow br = new SpecRow("Motherboard", (CleanVendor(boardMfr) + " " + board).Trim(), Brands.Detect(boardMfr));
+                si.Rows.Add(br); si.HardwareRows.Add(br);
+            }
             foreach (ManagementObject o in Query("SELECT SMBIOSBIOSVersion, ReleaseDate, Manufacturer FROM Win32_BIOS"))
             {
-                string d = S(o, "ReleaseDate"), date = "";
+                string d = S(o, "ReleaseDate"), date = "", biosMfr = S(o, "Manufacturer");
                 if (d.Length >= 8) { DateTime dt; if (DateTime.TryParseExact(d.Substring(0, 8), "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out dt)) date = "   \u00B7   " + dt.ToString("d MMM yyyy"); }
-                si.Rows.Add(new SpecRow("BIOS", (S(o, "Manufacturer") + " " + S(o, "SMBIOSBIOSVersion")).Trim() + date, null));
+                SpecRow bsr = new SpecRow("BIOS", (biosMfr + " " + S(o, "SMBIOSBIOSVersion")).Trim() + date, Brands.Detect(biosMfr));
+                si.Rows.Add(bsr); si.HardwareRows.Add(bsr);
             }
 
             // network
             foreach (AdapterInfo a in nets)
                 if (a.HasGateway)
-                    si.Rows.Add(new SpecRow("Network", CleanVendor(a.Description) + "   \u00B7   " + Fmt.LinkSpeed(a.LinkSpeed), Brands.Detect(a.Description)));
+                {
+                    SpecRow nr = new SpecRow("Network", CleanVendor(a.Description) + "   \u00B7   " + Fmt.LinkSpeed(a.LinkSpeed), Brands.Detect(a.Description));
+                    si.Rows.Add(nr); si.HardwareRows.Add(nr);
+                }
 
             // os
             string caption = "", arch = "", build = "", installed = "";
@@ -516,9 +569,14 @@ namespace NetSpeedBoss
                     if (k != null) { disp = Convert.ToString(k.GetValue("DisplayVersion", "")); ubr = Convert.ToString(k.GetValue("UBR", "")); }
             }
             catch { }
-            si.Rows.Add(new SpecRow("Windows", (caption + " " + disp).Trim() + "   \u00B7   build " + build + (ubr.Length > 0 ? "." + ubr : "") + "   \u00B7   " + arch,
-                Brands.Detect("windows")));
-            if (installed.Length > 0) si.Rows.Add(new SpecRow("Installed", installed, null));
+            SpecRow winRow = new SpecRow("Windows", (caption + " " + disp).Trim() + "   \u00B7   " + build + (ubr.Length > 0 ? "." + ubr : "") + (arch.Length > 0 ? " (" + arch + ")" : ""),
+                Brands.Detect("windows"));
+            si.Rows.Add(winRow); si.OsRows.Add(winRow);
+            if (installed.Length > 0)
+            {
+                SpecRow ir = new SpecRow("Installed", installed, null);
+                si.Rows.Add(ir); si.OsRows.Add(ir);
+            }
             return si;
         }
 

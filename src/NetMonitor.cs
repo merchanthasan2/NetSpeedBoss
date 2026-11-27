@@ -8,23 +8,26 @@ namespace NetSpeedBoss
 {
     public class AdapterInfo
     {
-        public string Id, Name, Description, Type, IPv4;
+        public string Id, Name, Description, Type, IPv4, Gateway = "";
         public long LinkSpeed;
         public bool HasGateway, Selected;
         public long BytesIn, BytesOut;
+        public double RxBps, TxBps;
     }
 
     /// <summary>Samples OS interface counters (64-bit) and turns them into speeds.</summary>
     public class NetMonitor
     {
         readonly Dictionary<string, long[]> prev = new Dictionary<string, long[]>();
-        readonly Dictionary<string, bool> gatewayCache = new Dictionary<string, bool>();
+        readonly Dictionary<string, string> gatewayCache = new Dictionary<string, string>();
         readonly Stopwatch sw = Stopwatch.StartNew();
         double lastT = -1;
         DateTime gatewayCacheTime = DateTime.MinValue;
 
         public double RxBps, TxBps;      // bytes per second
         public long RxDelta, TxDelta;    // bytes since previous sample
+        public int ActiveWanCount;
+        public bool IsMultiWan { get { return ActiveWanCount >= 2; } }
         public List<AdapterInfo> Adapters = new List<AdapterInfo>();
 
         static bool IsCandidate(NetworkInterface ni)
@@ -58,36 +61,42 @@ namespace NetSpeedBoss
                 }
                 catch { continue; }
 
-                bool gw;
-                if (refreshGw || !gatewayCache.TryGetValue(ni.Id, out gw))
+                string gwIp;
+                if (refreshGw || !gatewayCache.TryGetValue(ni.Id, out gwIp))
                 {
-                    gw = false;
+                    gwIp = "";
                     try
                     {
                         foreach (GatewayIPAddressInformation g in ni.GetIPProperties().GatewayAddresses)
                             if (g.Address != null && !g.Address.Equals(System.Net.IPAddress.Any) &&
-                                !g.Address.Equals(System.Net.IPAddress.IPv6Any)) { gw = true; break; }
+                                !g.Address.Equals(System.Net.IPAddress.IPv6Any)) { gwIp = g.Address.ToString(); break; }
                     }
                     catch { }
-                    gatewayCache[ni.Id] = gw;
+                    gatewayCache[ni.Id] = gwIp;
                 }
+                bool gw = gwIp.Length > 0;
 
                 AdapterInfo a = new AdapterInfo();
                 a.Id = ni.Id; a.Name = ni.Name; a.Description = ni.Description;
                 a.Type = ni.NetworkInterfaceType.ToString();
                 try { a.LinkSpeed = ni.Speed; } catch { }
-                a.HasGateway = gw; a.BytesIn = bin; a.BytesOut = bout;
+                a.HasGateway = gw; a.Gateway = gwIp; a.BytesIn = bin; a.BytesOut = bout;
                 list.Add(a);
             }
 
             bool anyGw = false;
             foreach (AdapterInfo a in list) if (a.HasGateway) { anyGw = true; break; }
 
+            double dt = lastT < 0 ? 0 : now - lastT;
+            lastT = now;
+            int wanCount = 0;
+
             foreach (AdapterInfo a in list)
             {
                 if (selection == "all") a.Selected = true;
                 else if (selection == "auto") a.Selected = anyGw ? a.HasGateway : true;
                 else a.Selected = a.Id == selection;
+                if (a.Selected && a.HasGateway) wanCount++;
 
                 seen.Add(a.Id);
                 long[] p;
@@ -96,6 +105,7 @@ namespace NetSpeedBoss
                     long dIn = a.BytesIn - p[0], dOut = a.BytesOut - p[1];
                     if (dIn < 0) dIn = 0;          // counter reset (adapter restarted)
                     if (dOut < 0) dOut = 0;
+                    if (dt > 0.05) { a.RxBps = dIn / dt; a.TxBps = dOut / dt; }
                     if (a.Selected) { rx += dIn; tx += dOut; }
                 }
                 prev[a.Id] = new long[] { a.BytesIn, a.BytesOut };
@@ -104,8 +114,7 @@ namespace NetSpeedBoss
             foreach (string k in prev.Keys) if (!seen.Contains(k)) gone.Add(k);
             foreach (string k in gone) prev.Remove(k);
 
-            double dt = lastT < 0 ? 0 : now - lastT;
-            lastT = now;
+            ActiveWanCount = wanCount;
             RxDelta = rx; TxDelta = tx;
             if (dt > 0.05) { RxBps = rx / dt; TxBps = tx / dt; }
             else { RxBps = 0; TxBps = 0; }

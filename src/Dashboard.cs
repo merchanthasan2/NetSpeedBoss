@@ -2,30 +2,63 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Threading;
 using System.Windows.Forms;
 
 namespace NetSpeedBoss
 {
+    class ModernTabControl : TabControl
+    {
+        public ModernTabControl()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x1328 /*TCM_ADJUSTRECT*/ && !DesignMode)
+            {
+                m.Result = (IntPtr)1;
+                return;
+            }
+            base.WndProc(ref m);
+        }
+    }
+
     public class Dashboard : Form
     {
         readonly TrayApp app;
-        readonly TabControl tabs = new TabControl();
+        readonly ModernTabControl tabs = new ModernTabControl();
         readonly Font uiFont = new Font("Segoe UI", 9f);
+        readonly Font navFont = new Font("Segoe UI Semibold", 9.5f);
+        readonly ToolTip tip = new ToolTip();
+        Panel navBar;
+        readonly List<Button> navBtns = new List<Button>();
+        Button btnThemeToggle;
+        Label lblNavVer;
 
         // live
         StatCard cDown, cUp, cPeakDown, cPeakUp, cSession;
         GraphPanel graph;
         TopAppsPanel topApps;
         ComboBox rangeBox;
+        Label lblPing, lblWanMode, lblSpeedResult;
+        Button btnSpeedTest;
+        readonly SpeedTester speedTester = new SpeedTester();
+        DateTime lastPingAt = DateTime.MinValue;
+        bool pingBusy;
+        long lastPingMs = -2;
         DbListView adapterList;
         DateTime lastAdapterRefresh = DateTime.MinValue;
 
         // apps
         DbListView procList, epList;
         Label appsStatus;
+        TextBox txtAppSearch;
         Button btnElevate;
         CheckBox chkActiveOnly, chkResolve;
         readonly ImageList icons = new ImageList();
@@ -46,7 +79,7 @@ namespace NetSpeedBoss
         bool loadingSettings;
         CheckBox sElevated;
         CheckBox sTaskbar, sShowMeter, sTop, sLock, sFull, sOneLine, sGraph, sStartup, sClickThrough, sAutoUpdate;
-        ComboBox sUnit, sInterval, sAdapter;
+        ComboBox sUnit, sInterval, sAdapter, sThemeMode;
         TrackBar sOpacity;
         NumericUpDown sFont, sLimit, sStartDay;
         Button bDown, bUp, bBack, bText, bTbText, btnCheckUpdates;
@@ -54,39 +87,54 @@ namespace NetSpeedBoss
         ComboBox tFont;
         NumericUpDown tSize;
         CheckBox tBold, tAuto;
+        CheckBox sGameAuto, sGameShow, sGameClickThrough, sGameRag;
+        CheckBox sHudFps, sHudGpu, sHudCpu, sHudMem, sHudNet, sHudGraph;
+        ComboBox sGameCorner, sGamePreset;
+        TrackBar sGameOpacity;
+        Label lblGameOpacity;
+        NumericUpDown nFpsG, nFpsA, nTempG, nTempA, nPingG, nPingA, nLoadA, nLoadR;
+        Button bHudBg, bHudBorder, bHudText, bHudFps, bHudGpu, bHudCpu, bHudMem, bHudNet;
+        GameHudPreview hudPreview;
+        SpecList gameDiagList;
 
         public Dashboard(TrayApp app)
         {
             this.app = app;
+            Theme.Apply(app.S.ThemeMode);
             Text = TrayApp.AppName + (app.IsAdmin ? " (Administrator)" : "");
             Font = uiFont;
             BackColor = Theme.Bg;
+            ForeColor = Theme.Ink;
             StartPosition = FormStartPosition.CenterScreen;
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
-            Size = new Size(Math.Min(wa.Width, Math.Max(900, app.S.DashW)), Math.Min(wa.Height, Math.Max(760, app.S.DashH)));
-            MinimumSize = new Size(760, 620);
+            Size = new Size(Math.Min(wa.Width, Math.Max(920, app.S.DashW)), Math.Min(wa.Height, Math.Max(780, app.S.DashH)));
+            MinimumSize = new Size(780, 640);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             icons.ColorDepth = ColorDepth.Depth32Bit;
             icons.ImageSize = new Size(16, 16);
 
             tabs.Dock = DockStyle.Fill;
-            tabs.Padding = new Point(14, 5);
+            tabs.Margin = Padding.Empty;
             tabs.TabPages.Add(BuildLive());
             tabs.TabPages.Add(BuildApps());
             tabs.TabPages.Add(BuildUsage());
             tabs.TabPages.Add(BuildSystem());
+            tabs.TabPages.Add(BuildGamingHud());
             tabs.TabPages.Add(BuildSettings());
-            tabs.SelectedIndexChanged += delegate { lastUsageRefresh = DateTime.MinValue; OnTick(); };
+            tabs.SelectedIndexChanged += delegate { SyncNavButtons(); lastUsageRefresh = DateTime.MinValue; OnTick(); };
             Controls.Add(tabs);
             Controls.Add(BuildModeBar());
             Controls.Add(BuildUpdateBar());
+            Controls.Add(BuildNavBar());
 
+            HandleCreated += delegate { ApplyDwmFrame(); };
             FormClosing += delegate
             {
                 if (WindowState == FormWindowState.Normal) { app.S.DashW = Width; app.S.DashH = Height; }
                 app.S.Save();
             };
             LoadSettingsIntoUi();
+            ApplyTheme();
             RefreshUpdateBar();
             OnTick();
         }
@@ -99,11 +147,238 @@ namespace NetSpeedBoss
                 app.CheckForUpdatesAsync(false, null);
         }
 
-        Panel updateBar;
-        Label updateMsg;
-        Button btnUpdateNow, btnUpdateClose;
+        Panel updateBar, modeBar;
+        Label updateMsg, modeMsg;
+        Button btnUpdateNow, btnUpdateClose, btnModeAction, btnModeClose;
         LinkLabel lnkUpdateNotes;
         bool updateDismissed, updateBusy;
+
+        Panel BuildNavBar()
+        {
+            navBar = new Panel(); navBar.Dock = DockStyle.Top; navBar.Height = 46; navBar.Padding = new Padding(12, 0, 12, 0);
+            navBar.Paint += delegate(object s, PaintEventArgs e)
+            {
+                using (Pen p = new Pen(Theme.Border)) e.Graphics.DrawLine(p, 0, navBar.Height - 1, navBar.Width, navBar.Height - 1);
+            };
+
+            FlowLayoutPanel left = new FlowLayoutPanel(); left.Dock = DockStyle.Left; left.AutoSize = true; left.WrapContents = false;
+            left.Padding = new Padding(0, 4, 0, 0);
+            string[] names = { "Live", "Apps", "Usage", "System", "Gaming HUD", "Settings" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                int idx = i;
+                Button b = new Button();
+                b.Text = names[i];
+                b.Tag = idx;
+                b.AutoSize = true;
+                b.MinimumSize = new Size(76, 38);
+                b.FlatStyle = FlatStyle.Flat;
+                b.FlatAppearance.BorderSize = 0;
+                b.Font = navFont;
+                b.Cursor = Cursors.Hand;
+                b.Margin = new Padding(0, 0, 4, 0);
+                b.Paint += delegate(object s, PaintEventArgs e)
+                {
+                    if (tabs.SelectedIndex != idx) return;
+                    using (SolidBrush ab = new SolidBrush(Theme.Accent))
+                        e.Graphics.FillRectangle(ab, 10, b.Height - 4, b.Width - 20, 3);
+                };
+                b.Click += delegate { tabs.SelectedIndex = idx; };
+                navBtns.Add(b);
+                left.Controls.Add(b);
+            }
+
+            FlowLayoutPanel right = new FlowLayoutPanel(); right.Dock = DockStyle.Right; right.AutoSize = true; right.WrapContents = false;
+            right.Padding = new Padding(0, 9, 0, 0);
+
+            btnThemeToggle = new Button();
+            btnThemeToggle.AutoSize = true; btnThemeToggle.Height = 28;
+            btnThemeToggle.FlatStyle = FlatStyle.Flat; btnThemeToggle.FlatAppearance.BorderSize = 1;
+            btnThemeToggle.Font = new Font("Segoe UI", 8.5f); btnThemeToggle.Cursor = Cursors.Hand;
+            btnThemeToggle.Padding = new Padding(8, 2, 8, 2); btnThemeToggle.Margin = new Padding(0, 0, 8, 0);
+            btnThemeToggle.Click += delegate
+            {
+                app.S.ThemeMode = (DashTheme)(((int)app.S.ThemeMode + 1) % 3);
+                app.S.Save();
+                LoadSettingsIntoUi();
+                ApplyTheme();
+            };
+
+            lblNavVer = new Label();
+            lblNavVer.Text = "v" + Updater.CurrentVersionString();
+            lblNavVer.AutoSize = true;
+            lblNavVer.Font = new Font("Segoe UI", 8.5f);
+            lblNavVer.Margin = new Padding(2, 6, 2, 0);
+
+            right.Controls.Add(btnThemeToggle);
+            right.Controls.Add(lblNavVer);
+            navBar.Controls.Add(left);
+            navBar.Controls.Add(right);
+            return navBar;
+        }
+
+        void SyncNavButtons()
+        {
+            for (int i = 0; i < navBtns.Count; i++)
+            {
+                Button b = navBtns[i];
+                bool sel = i == tabs.SelectedIndex;
+                b.BackColor = sel ? Theme.Hover : Theme.Card;
+                b.ForeColor = sel ? Theme.Ink : Theme.Muted;
+                b.FlatAppearance.MouseOverBackColor = Theme.Hover;
+                b.Invalidate();
+            }
+        }
+
+        void ApplyDwmFrame()
+        {
+            if (!IsHandleCreated) return;
+            try
+            {
+                int dark = Theme.IsDark ? 1 : 0;
+                Native.DwmSetWindowAttribute(Handle, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, ref dark, 4);
+                int corner = 2 /*DWMWCP_ROUND*/;
+                Native.DwmSetWindowAttribute(Handle, 33 /*DWMWA_WINDOW_CORNER_PREFERENCE*/, ref corner, 4);
+            }
+            catch { }
+        }
+
+        void ApplyTheme()
+        {
+            Theme.Apply(app.S.ThemeMode);
+            BackColor = Theme.Bg;
+            ForeColor = Theme.Ink;
+            ApplyDwmFrame();
+
+            if (navBar != null)
+            {
+                navBar.BackColor = Theme.Card;
+                SyncNavButtons();
+                if (btnThemeToggle != null)
+                {
+                    btnThemeToggle.BackColor = Theme.CardAlt;
+                    btnThemeToggle.ForeColor = Theme.Ink;
+                    btnThemeToggle.FlatAppearance.BorderColor = Theme.Border;
+                    btnThemeToggle.Text = app.S.ThemeMode == DashTheme.Auto ? "Theme: Auto"
+                        : (app.S.ThemeMode == DashTheme.Dark ? "Theme: Dark" : "Theme: Light");
+                }
+                if (lblNavVer != null) lblNavVer.ForeColor = Theme.Muted;
+                navBar.Invalidate();
+            }
+
+            if (modeBar != null)
+            {
+                bool admin = app.IsAdmin;
+                Color bg = Theme.IsDark
+                    ? (admin ? Color.FromArgb(18, 42, 34) : Color.FromArgb(46, 35, 18))
+                    : (admin ? Color.FromArgb(236, 253, 245) : Color.FromArgb(255, 248, 231));
+                Color accent = admin ? Color.FromArgb(16, 185, 129) : Color.FromArgb(217, 119, 6);
+                Color fg = Theme.IsDark
+                    ? (admin ? Color.FromArgb(167, 243, 208) : Color.FromArgb(253, 230, 138))
+                    : (admin ? Color.FromArgb(6, 95, 70) : Color.FromArgb(120, 53, 15));
+                modeBar.BackColor = bg;
+                modeBar.Tag = accent;
+                if (modeMsg != null) { modeMsg.BackColor = bg; modeMsg.ForeColor = fg; }
+                foreach (Control c in modeBar.Controls) if (c is FlowLayoutPanel) c.BackColor = bg;
+                if (btnModeAction != null && admin) { btnModeAction.BackColor = Theme.Card; btnModeAction.ForeColor = fg; }
+                if (btnModeClose != null) { btnModeClose.BackColor = bg; btnModeClose.ForeColor = fg; }
+                modeBar.Invalidate();
+            }
+
+            if (updateBar != null)
+            {
+                Color bg = Theme.IsDark ? Color.FromArgb(21, 36, 58) : Color.FromArgb(239, 246, 255);
+                Color fg = Theme.IsDark ? Color.FromArgb(191, 219, 254) : Color.FromArgb(30, 58, 138);
+                Color accent = Theme.Accent;
+                updateBar.BackColor = bg;
+                if (updateMsg != null) { updateMsg.BackColor = bg; updateMsg.ForeColor = fg; }
+                foreach (Control c in updateBar.Controls) if (c is FlowLayoutPanel) c.BackColor = bg;
+                if (lnkUpdateNotes != null) { lnkUpdateNotes.BackColor = bg; lnkUpdateNotes.LinkColor = accent; lnkUpdateNotes.ActiveLinkColor = fg; }
+                if (btnUpdateClose != null) { btnUpdateClose.BackColor = bg; btnUpdateClose.ForeColor = fg; }
+                updateBar.Invalidate();
+            }
+
+            lastAdapterRefresh = DateTime.MinValue;
+            lastUsageRefresh = DateTime.MinValue;
+            foreach (TabPage tp in tabs.TabPages) ApplyThemeTo(tp);
+            if (btnSpeedTest != null) btnSpeedTest.BackColor = Theme.Accent;
+            if (lblPing != null) lblPing.Invalidate();
+            Invalidate(true);
+        }
+
+        void ApplyThemeTo(Control c)
+        {
+            if (c is TabPage || c is SplitContainer || c is SplitterPanel)
+            {
+                c.BackColor = Theme.Bg;
+                c.ForeColor = Theme.Ink;
+            }
+            else if (c is StatCard)
+            {
+                ((StatCard)c).SyncTheme();
+            }
+            else if (c is CardPanel)
+            {
+                c.BackColor = Theme.Card;
+                c.ForeColor = Theme.Ink;
+                c.Invalidate();
+            }
+            else if (c is DbListView)
+            {
+                c.BackColor = Theme.Card;
+                c.ForeColor = Theme.Ink;
+                c.Invalidate();
+            }
+            else if (c is GraphPanel || c is TopAppsPanel || c is UsageTopAppsPanel || c is UsageChart || c is UtilCard || c is SpecList || c is GameHudPreview)
+            {
+                c.BackColor = Theme.Card;
+                c.ForeColor = Theme.Ink;
+                c.Invalidate();
+            }
+            else if (c is Button)
+            {
+                Button b = (Button)c;
+                b.UseMnemonic = false;
+                if (!object.Equals(b.Tag, "primary"))
+                {
+                    b.FlatStyle = FlatStyle.Flat;
+                    b.FlatAppearance.BorderColor = Theme.Border;
+                    b.FlatAppearance.BorderSize = 1;
+                    b.FlatAppearance.MouseOverBackColor = Theme.Hover;
+                    b.BackColor = Theme.CardAlt;
+                    b.ForeColor = Theme.Ink;
+                    b.Cursor = Cursors.Hand;
+                }
+            }
+            else if (c is ComboBox || c is NumericUpDown || c is TextBox)
+            {
+                c.BackColor = Theme.CardAlt;
+                c.ForeColor = Theme.Ink;
+            }
+            else if (c is LinkLabel)
+            {
+                LinkLabel ll = (LinkLabel)c;
+                ll.LinkColor = Theme.Accent;
+                ll.ActiveLinkColor = Theme.Ink;
+            }
+            else if (c is Label || c is CheckBox)
+            {
+                if (c is Label) ((Label)c).UseMnemonic = false;
+                if (c is CheckBox) ((CheckBox)c).UseMnemonic = false;
+                c.BackColor = Color.Transparent;
+                if (!object.Equals(c.Tag, "keepcolor"))
+                    c.ForeColor = object.Equals(c.Tag, "muted") ? Theme.Muted : Theme.Ink;
+            }
+            else if (c is Panel || c is TableLayoutPanel || c is FlowLayoutPanel)
+            {
+                if (object.Equals(c.Tag, "card")) c.BackColor = Theme.Card;
+                else if (c.Parent is CardPanel) c.BackColor = Theme.Card;
+                else c.BackColor = Theme.Bg;
+                c.ForeColor = Theme.Ink;
+            }
+
+            foreach (Control child in c.Controls) ApplyThemeTo(child);
+        }
 
         Panel BuildUpdateBar()
         {
@@ -115,7 +390,7 @@ namespace NetSpeedBoss
             updateBar.Padding = new Padding(10, 4, 10, 4); updateBar.Visible = false;
             updateBar.Paint += delegate(object s, PaintEventArgs e)
             {
-                using (SolidBrush b = new SolidBrush(accent)) e.Graphics.FillRectangle(b, 0, 0, 4, updateBar.Height);
+                using (SolidBrush b = new SolidBrush(Theme.Accent)) e.Graphics.FillRectangle(b, 0, 0, 4, updateBar.Height);
                 using (Pen p = new Pen(Theme.Border)) e.Graphics.DrawLine(p, 0, updateBar.Height - 1, updateBar.Width, updateBar.Height - 1);
             };
 
@@ -207,11 +482,13 @@ namespace NetSpeedBoss
             Color accent = admin ? Color.FromArgb(16, 185, 129) : Color.FromArgb(217, 119, 6);
             Color fg = admin ? Color.FromArgb(6, 95, 70) : Color.FromArgb(120, 53, 15);
 
-            Panel bar = new Panel(); bar.Dock = DockStyle.Top; bar.Height = 36; bar.BackColor = bg; bar.Padding = new Padding(10, 4, 10, 4);
-            bar.Paint += delegate(object s, PaintEventArgs e)
+            modeBar = new Panel(); modeBar.Dock = DockStyle.Top; modeBar.Height = 36; modeBar.BackColor = bg; modeBar.Padding = new Padding(10, 4, 10, 4);
+            modeBar.Tag = accent;
+            modeBar.Paint += delegate(object s, PaintEventArgs e)
             {
-                using (SolidBrush b = new SolidBrush(accent)) e.Graphics.FillRectangle(b, 0, 0, 4, bar.Height);
-                using (Pen p = new Pen(Theme.Border)) e.Graphics.DrawLine(p, 0, bar.Height - 1, bar.Width, bar.Height - 1);
+                Color ac = modeBar.Tag is Color ? (Color)modeBar.Tag : accent;
+                using (SolidBrush b = new SolidBrush(ac)) e.Graphics.FillRectangle(b, 0, 0, 4, modeBar.Height);
+                using (Pen p = new Pen(Theme.Border)) e.Graphics.DrawLine(p, 0, modeBar.Height - 1, modeBar.Width, modeBar.Height - 1);
             };
 
             FlowLayoutPanel right = new FlowLayoutPanel(); right.Dock = DockStyle.Right; right.AutoSize = true; right.WrapContents = false;
@@ -219,52 +496,52 @@ namespace NetSpeedBoss
 
             if (!admin)
             {
-                Button btn = new Button(); btn.Text = "Restart as Administrator"; btn.AutoSize = true;
-                btn.FlatStyle = FlatStyle.Flat; btn.FlatAppearance.BorderSize = 0;
-                btn.BackColor = accent; btn.ForeColor = Color.White;
-                btn.Font = new Font("Segoe UI Semibold", 8.5f); btn.Cursor = Cursors.Hand;
-                btn.Padding = new Padding(8, 1, 8, 1); btn.Margin = new Padding(0, 1, 4, 0);
-                btn.Click += delegate { app.RestartElevated(); };
+                btnModeAction = new Button(); btnModeAction.Text = "Restart as Administrator"; btnModeAction.AutoSize = true;
+                btnModeAction.FlatStyle = FlatStyle.Flat; btnModeAction.FlatAppearance.BorderSize = 0;
+                btnModeAction.BackColor = accent; btnModeAction.ForeColor = Color.White;
+                btnModeAction.Font = new Font("Segoe UI Semibold", 8.5f); btnModeAction.Cursor = Cursors.Hand;
+                btnModeAction.Padding = new Padding(8, 1, 8, 1); btnModeAction.Margin = new Padding(0, 1, 4, 0);
+                btnModeAction.Click += delegate { app.RestartElevated(); };
 
-                Button close = new Button(); close.Text = "×"; close.Width = 24; close.Height = 24;
-                close.FlatStyle = FlatStyle.Flat; close.FlatAppearance.BorderSize = 0;
-                close.BackColor = bg; close.ForeColor = fg; close.Cursor = Cursors.Hand;
-                close.Margin = new Padding(0, 1, 0, 0);
-                close.Click += delegate { bar.Visible = false; };
-                right.Controls.Add(btn); right.Controls.Add(close);
+                btnModeClose = new Button(); btnModeClose.Text = "×"; btnModeClose.Width = 24; btnModeClose.Height = 24;
+                btnModeClose.FlatStyle = FlatStyle.Flat; btnModeClose.FlatAppearance.BorderSize = 0;
+                btnModeClose.BackColor = bg; btnModeClose.ForeColor = fg; btnModeClose.Cursor = Cursors.Hand;
+                btnModeClose.Margin = new Padding(0, 1, 0, 0);
+                btnModeClose.Click += delegate { modeBar.Visible = false; };
+                right.Controls.Add(btnModeAction); right.Controls.Add(btnModeClose);
             }
             else
             {
-                Button autoBtn = new Button();
-                autoBtn.AutoSize = true; autoBtn.FlatStyle = FlatStyle.Flat;
-                autoBtn.FlatAppearance.BorderColor = accent; autoBtn.FlatAppearance.BorderSize = 1;
-                autoBtn.BackColor = Color.White; autoBtn.ForeColor = fg;
-                autoBtn.Font = new Font("Segoe UI Semibold", 8.5f); autoBtn.Cursor = Cursors.Hand;
-                autoBtn.Padding = new Padding(8, 1, 8, 1); autoBtn.Margin = new Padding(0, 1, 0, 0);
+                btnModeAction = new Button();
+                btnModeAction.AutoSize = true; btnModeAction.FlatStyle = FlatStyle.Flat;
+                btnModeAction.FlatAppearance.BorderColor = accent; btnModeAction.FlatAppearance.BorderSize = 1;
+                btnModeAction.BackColor = Color.White; btnModeAction.ForeColor = fg;
+                btnModeAction.Font = new Font("Segoe UI Semibold", 8.5f); btnModeAction.Cursor = Cursors.Hand;
+                btnModeAction.Padding = new Padding(8, 1, 8, 1); btnModeAction.Margin = new Padding(0, 1, 0, 0);
                 Action syncAuto = delegate
                 {
                     bool on = app.ElevatedStartupEnabled;
-                    autoBtn.Text = on ? "✔ Auto-starts as Admin" : "Auto-start as Admin (no prompt)";
+                    btnModeAction.Text = on ? "✔ Auto-starts as Admin" : "Auto-start as Admin (no prompt)";
                 };
                 syncAuto();
-                autoBtn.Click += delegate
+                btnModeAction.Click += delegate
                 {
                     if (!app.SetElevatedStartup(!app.ElevatedStartupEnabled))
                         MessageBox.Show("Could not update the elevated sign-in task.", TrayApp.AppName);
                     syncAuto();
                     LoadSettingsIntoUi();
                 };
-                right.Controls.Add(autoBtn);
+                right.Controls.Add(btnModeAction);
             }
 
-            Label msg = new Label(); msg.Dock = DockStyle.Fill; msg.TextAlign = ContentAlignment.MiddleLeft;
-            msg.ForeColor = fg; msg.BackColor = bg; msg.Padding = new Padding(4, 0, 0, 0);
-            msg.Text = admin
+            modeMsg = new Label(); modeMsg.Dock = DockStyle.Fill; modeMsg.TextAlign = ContentAlignment.MiddleLeft;
+            modeMsg.ForeColor = fg; modeMsg.BackColor = bg; modeMsg.Padding = new Padding(4, 0, 0, 0);
+            modeMsg.Text = admin
                 ? "✔ Administrator mode active  ·  Live per-app speeds and hourly app logs are enabled."
                 : "Standard mode  ·  Per-app live speeds and hourly app logs require Administrator rights.";
 
-            bar.Controls.Add(msg); bar.Controls.Add(right);
-            return bar;
+            modeBar.Controls.Add(modeMsg); modeBar.Controls.Add(right);
+            return modeBar;
         }
 
         public void SelectTab(int i) { if (i >= 0 && i < tabs.TabPages.Count) tabs.SelectedIndex = i; }
@@ -300,27 +577,59 @@ namespace NetSpeedBoss
 
             Panel graphHost = new Panel();
             graphHost.Dock = DockStyle.Fill; graphHost.Padding = new Padding(6);
+            CardPanel graphCard = new CardPanel(); graphCard.Dock = DockStyle.Fill; graphCard.Padding = new Padding(6, 4, 6, 6);
             graph = new GraphPanel(); graph.App = app; graph.Dock = DockStyle.Fill;
-            Panel graphBar = new Panel(); graphBar.Dock = DockStyle.Top; graphBar.Height = 30; graphBar.BackColor = Theme.Card;
-            Label gl = new Label(); gl.Text = "Speed history"; gl.Font = new Font("Segoe UI Semibold", 9.5f); gl.AutoSize = true; gl.Location = new Point(8, 6);
-            rangeBox = new ComboBox(); rangeBox.DropDownStyle = ComboBoxStyle.DropDownList; rangeBox.Width = 110;
+            Panel graphBar = new Panel(); graphBar.Dock = DockStyle.Top; graphBar.Height = 32; graphBar.Tag = "card";
+            Label gl = new Label(); gl.Text = "Speed history"; gl.Font = new Font("Segoe UI Semibold", 9.5f); gl.AutoSize = true; gl.Location = new Point(6, 7);
+            lblWanMode = new Label(); lblWanMode.AutoSize = true; lblWanMode.Tag = "keepcolor"; lblWanMode.Location = new Point(108, 8);
+            lblSpeedResult = new Label(); lblSpeedResult.AutoSize = false; lblSpeedResult.Height = 20; lblSpeedResult.AutoEllipsis = true;
+            lblSpeedResult.TextAlign = ContentAlignment.MiddleLeft; lblSpeedResult.Tag = "keepcolor"; lblSpeedResult.ForeColor = Theme.Muted;
+
+            btnSpeedTest = new Button(); btnSpeedTest.Text = "Speedtest"; btnSpeedTest.Size = new Size(88, 24);
+            btnSpeedTest.Tag = "primary";
+            btnSpeedTest.FlatStyle = FlatStyle.Flat; btnSpeedTest.FlatAppearance.BorderSize = 0;
+            btnSpeedTest.BackColor = Theme.Accent; btnSpeedTest.ForeColor = Color.White; btnSpeedTest.Cursor = Cursors.Hand;
+            btnSpeedTest.Font = new Font("Segoe UI Semibold", 8.5f);
+            btnSpeedTest.Click += delegate { ToggleSpeedTest(); };
+            tip.SetToolTip(btnSpeedTest, "Run multi-stream speed test (measures combined load-balanced bandwidth)");
+
+            lblPing = new Label(); lblPing.AutoSize = false; lblPing.Size = new Size(94, 22); lblPing.Tag = "keepcolor"; lblPing.Cursor = Cursors.Hand;
+            lblPing.Paint += PaintPingPill;
+            lblPing.Click += delegate { CheckPingAsync(true); };
+            tip.SetToolTip(lblPing, "Latency to 1.1.1.1 (click to re-test)");
+            rangeBox = new ComboBox(); rangeBox.DropDownStyle = ComboBoxStyle.DropDownList; rangeBox.Width = 104;
             rangeBox.Items.AddRange(new object[] { "1 minute", "2 minutes", "5 minutes", "10 minutes" });
             rangeBox.SelectedIndex = 1;
             rangeBox.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             rangeBox.SelectedIndexChanged += delegate { graph.Seconds = new int[] { 60, 120, 300, 600 }[rangeBox.SelectedIndex]; graph.Invalidate(); };
-            graphBar.Controls.Add(gl); graphBar.Controls.Add(rangeBox);
-            graphBar.Resize += delegate { rangeBox.Location = new Point(graphBar.Width - rangeBox.Width - 6, 3); };
-            graphHost.Controls.Add(graph); graphHost.Controls.Add(graphBar);
+            graphBar.Controls.Add(gl); graphBar.Controls.Add(lblWanMode); graphBar.Controls.Add(lblSpeedResult);
+            graphBar.Controls.Add(btnSpeedTest); graphBar.Controls.Add(lblPing); graphBar.Controls.Add(rangeBox);
+            Action layoutGraphBar = delegate
+            {
+                rangeBox.Location = new Point(graphBar.Width - rangeBox.Width - 4, 4);
+                lblPing.Location = new Point(rangeBox.Left - lblPing.Width - 8, 5);
+                btnSpeedTest.Location = new Point(lblPing.Left - btnSpeedTest.Width - 8, 4);
+                lblWanMode.Location = new Point(gl.Right + 10, 8);
+                int resLeft = lblWanMode.Right + 12;
+                lblSpeedResult.Location = new Point(resLeft, 6);
+                lblSpeedResult.Width = Math.Max(0, btnSpeedTest.Left - resLeft - 8);
+            };
+            graphBar.Resize += delegate { layoutGraphBar(); };
+            lblWanMode.TextChanged += delegate { layoutGraphBar(); };
+            lblWanMode.SizeChanged += delegate { layoutGraphBar(); };
+            graphCard.Controls.Add(graph); graphCard.Controls.Add(graphBar);
+            graphHost.Controls.Add(graphCard);
 
-            adapterList = new DbListView(); adapterList.Dock = DockStyle.Bottom; adapterList.Height = 130;
-            Col(adapterList, "Adapter", 170, HorizontalAlignment.Left);
-            Col(adapterList, "Description", 230, HorizontalAlignment.Left);
-            Col(adapterList, "Type", 90, HorizontalAlignment.Left);
-            Col(adapterList, "Link speed", 85, HorizontalAlignment.Right);
-            Col(adapterList, "IPv4", 110, HorizontalAlignment.Left);
-            Col(adapterList, "Received (since boot)", 135, HorizontalAlignment.Right);
-            Col(adapterList, "Sent (since boot)", 115, HorizontalAlignment.Right);
-            Col(adapterList, "Measured", 70, HorizontalAlignment.Center);
+            adapterList = new DbListView(); adapterList.Dock = DockStyle.Fill;
+            Col(adapterList, "Adapter", 140, HorizontalAlignment.Left);
+            Col(adapterList, "Download", 88, HorizontalAlignment.Right);
+            Col(adapterList, "Upload", 84, HorizontalAlignment.Right);
+            Col(adapterList, "Link speed", 78, HorizontalAlignment.Right);
+            Col(adapterList, "IPv4", 104, HorizontalAlignment.Left);
+            Col(adapterList, "Gateway", 104, HorizontalAlignment.Left);
+            Col(adapterList, "Received", 92, HorizontalAlignment.Right);
+            Col(adapterList, "Sent", 84, HorizontalAlignment.Right);
+            Col(adapterList, "Measured", 82, HorizontalAlignment.Center);
 
             Panel appsHost = new Panel(); appsHost.Dock = DockStyle.Bottom; appsHost.Padding = new Padding(6, 0, 6, 6);
             appsHost.Height = TopAppsPanel.PreferredHeight + 6;
@@ -328,10 +637,11 @@ namespace NetSpeedBoss
             topApps.IconFor = delegate(string path) { int i = IconFor(path); return i >= 0 ? icons.Images[i] : null; };
             appsHost.Controls.Add(topApps);
 
-            Panel adapterHost = new Panel(); adapterHost.Dock = DockStyle.Bottom; adapterHost.Height = 130; adapterHost.Padding = new Padding(6);
-            Label al = new Label(); al.Text = "Network adapters"; al.Font = new Font("Segoe UI Semibold", 9.5f); al.Dock = DockStyle.Top; al.Height = 22;
-            adapterHost.Controls.Add(adapterList); adapterHost.Controls.Add(al);
-            adapterList.Dock = DockStyle.Fill;
+            Panel adapterHost = new Panel(); adapterHost.Dock = DockStyle.Bottom; adapterHost.Height = 136; adapterHost.Padding = new Padding(6);
+            CardPanel adapterCard = new CardPanel(); adapterCard.Dock = DockStyle.Fill; adapterCard.Padding = new Padding(8, 6, 8, 6);
+            Label al = new Label(); al.Text = "Network adapters"; al.Font = new Font("Segoe UI Semibold", 9.5f); al.Dock = DockStyle.Top; al.Height = 24;
+            adapterCard.Controls.Add(adapterList); adapterCard.Controls.Add(al);
+            adapterHost.Controls.Add(adapterCard);
 
             p.Controls.Add(graphHost);
             p.Controls.Add(appsHost);
@@ -343,8 +653,39 @@ namespace NetSpeedBoss
         void TickLive()
         {
             Settings s = app.S;
-            cDown.Set(Fmt.Speed(app.CurRx, s.Unit), "↓ receiving");
-            cUp.Set(Fmt.Speed(app.CurTx, s.Unit), "↑ sending");
+            bool multi = app.Net.IsMultiWan;
+            if (multi)
+            {
+                cDown.Title("Total Download (" + app.Net.ActiveWanCount + " WANs)");
+                cUp.Title("Total Upload (" + app.Net.ActiveWanCount + " WANs)");
+                List<string> dnParts = new List<string>(), upParts = new List<string>();
+                foreach (AdapterInfo a in app.Net.Adapters)
+                {
+                    if (!a.Selected || !a.HasGateway) continue;
+                    string shortN = a.Name.Length > 10 ? a.Name.Substring(0, 10) : a.Name;
+                    dnParts.Add(shortN + " " + Fmt.Speed(a.RxBps, s.Unit));
+                    upParts.Add(shortN + " " + Fmt.Speed(a.TxBps, s.Unit));
+                }
+                cDown.Set(Fmt.Speed(app.CurRx, s.Unit), string.Join(" + ", dnParts.ToArray()));
+                cUp.Set(Fmt.Speed(app.CurTx, s.Unit), string.Join(" + ", upParts.ToArray()));
+                if (lblWanMode != null)
+                {
+                    lblWanMode.Text = "● " + app.Net.ActiveWanCount + " WANs · Load balanced";
+                    lblWanMode.ForeColor = Theme.IsDark ? Color.FromArgb(52, 211, 153) : Color.FromArgb(16, 124, 16);
+                }
+            }
+            else
+            {
+                cDown.Title("Download");
+                cUp.Title("Upload");
+                cDown.Set(Fmt.Speed(app.CurRx, s.Unit), "↓ receiving");
+                cUp.Set(Fmt.Speed(app.CurTx, s.Unit), "↑ sending");
+                if (lblWanMode != null)
+                {
+                    lblWanMode.Text = app.Net.ActiveWanCount == 1 ? "Single WAN" : "No gateway";
+                    lblWanMode.ForeColor = Theme.Muted;
+                }
+            }
             cPeakDown.Set(Fmt.Speed(app.PeakRx, s.Unit), "since " + app.SessionStart.ToString("t"));
             cPeakUp.Set(Fmt.Speed(app.PeakTx, s.Unit), "since " + app.SessionStart.ToString("t"));
             TimeSpan up = DateTime.Now - app.SessionStart;
@@ -354,19 +695,32 @@ namespace NetSpeedBoss
                 "↓ " + Fmt.Size(app.SessionRx) + "  ↑ " + Fmt.Size(app.SessionTx));
             graph.Invalidate();
             topApps.RefreshRows();
+            if ((DateTime.UtcNow - lastPingAt).TotalSeconds >= 3) CheckPingAsync(false);
 
-            if ((DateTime.UtcNow - lastAdapterRefresh).TotalSeconds >= 3)
+            if ((DateTime.UtcNow - lastAdapterRefresh).TotalSeconds >= 1)
             {
                 lastAdapterRefresh = DateTime.UtcNow;
+                List<AdapterInfo> ads = app.Net.Adapters;
                 adapterList.BeginUpdate();
-                adapterList.Items.Clear();
-                foreach (AdapterInfo a in app.Net.Adapters)
+                while (adapterList.Items.Count > ads.Count) adapterList.Items.RemoveAt(adapterList.Items.Count - 1);
+                for (int i = 0; i < ads.Count; i++)
                 {
+                    AdapterInfo a = ads[i];
                     if (a.IPv4 == null) a.IPv4 = NetMonitor.GetIPv4(a.Id);
-                    ListViewItem it = new ListViewItem(new string[] { a.Name, a.Description, a.Type, Fmt.LinkSpeed(a.LinkSpeed),
-                        a.IPv4, Fmt.Size(a.BytesIn), Fmt.Size(a.BytesOut), a.Selected ? "✔" : "" });
-                    if (!a.Selected) it.ForeColor = Theme.Muted;
-                    adapterList.Items.Add(it);
+                    ListViewItem it = i < adapterList.Items.Count ? adapterList.Items[i] : adapterList.Items.Add("");
+                    SetRow(it, new string[] {
+                        a.Name,
+                        Fmt.Speed(a.RxBps, s.Unit),
+                        Fmt.Speed(a.TxBps, s.Unit),
+                        Fmt.LinkSpeed(a.LinkSpeed),
+                        a.IPv4,
+                        a.Gateway,
+                        Fmt.Size(a.BytesIn),
+                        Fmt.Size(a.BytesOut),
+                        a.Selected ? (a.HasGateway && multi ? "✔ WAN" : "✔") : ""
+                    });
+                    Color fc = a.Selected ? Theme.Ink : Theme.Muted;
+                    if (it.ForeColor != fc) it.ForeColor = fc;
                 }
                 adapterList.EndUpdate();
             }
@@ -376,10 +730,14 @@ namespace NetSpeedBoss
         TabPage BuildApps()
         {
             TabPage p = Page("Apps");
-            Panel bar = new Panel(); bar.Dock = DockStyle.Top; bar.Height = 40; bar.BackColor = Theme.Card; bar.Padding = new Padding(8, 6, 8, 6);
+            CardPanel bar = new CardPanel(); bar.Radius = 8; bar.Dock = DockStyle.Top; bar.Height = 42; bar.Padding = new Padding(10, 7, 10, 7);
             appsStatus = new Label(); appsStatus.AutoSize = false; appsStatus.Dock = DockStyle.Fill; appsStatus.TextAlign = ContentAlignment.MiddleLeft;
+            appsStatus.AutoEllipsis = true; appsStatus.Tag = "keepcolor";
             FlowLayoutPanel right = new FlowLayoutPanel(); right.Dock = DockStyle.Right; right.AutoSize = true; right.WrapContents = false;
             right.FlowDirection = FlowDirection.LeftToRight;
+            txtAppSearch = new TextBox(); txtAppSearch.Width = 140; txtAppSearch.BorderStyle = BorderStyle.FixedSingle; txtAppSearch.Margin = new Padding(0, 3, 6, 0);
+            txtAppSearch.HandleCreated += delegate { Native.SendMessage(txtAppSearch.Handle, 0x1501 /*EM_SETCUEBANNER*/, 1, "Search apps..."); };
+            txtAppSearch.TextChanged += delegate { TickApps(); };
             chkActiveOnly = new CheckBox(); chkActiveOnly.Text = "Active only"; chkActiveOnly.AutoSize = true; chkActiveOnly.Margin = new Padding(6, 5, 6, 0);
             chkActiveOnly.CheckedChanged += delegate { TickApps(); };
             chkResolve = new CheckBox(); chkResolve.Text = "Resolve host names"; chkResolve.Checked = true; chkResolve.AutoSize = true; chkResolve.Margin = new Padding(6, 5, 6, 0);
@@ -387,7 +745,7 @@ namespace NetSpeedBoss
             btnElevate = new Button(); btnElevate.Text = "Restart as administrator"; btnElevate.AutoSize = true;
             btnElevate.Click += delegate { app.RestartElevated(); };
             btnElevate.Visible = !app.IsAdmin;
-            right.Controls.Add(chkActiveOnly); right.Controls.Add(chkResolve); right.Controls.Add(reset); right.Controls.Add(btnElevate);
+            right.Controls.Add(txtAppSearch); right.Controls.Add(chkActiveOnly); right.Controls.Add(chkResolve); right.Controls.Add(reset); right.Controls.Add(btnElevate);
             bar.Controls.Add(appsStatus); bar.Controls.Add(right);
 
             SplitContainer split = new SplitContainer();
@@ -414,6 +772,7 @@ namespace NetSpeedBoss
                 if (procList.SelectedItems.Count > 0) { selectedPid = (int)procList.SelectedItems[0].Tag; TickApps(); }
             };
             ContextMenuStrip pm = new ContextMenuStrip();
+            pm.Renderer = ModernMenuRenderer.Instance;
             pm.Items.Add("Open file location", null, delegate
             {
                 ProcView v = SelectedProc();
@@ -439,6 +798,7 @@ namespace NetSpeedBoss
             Col(epList, "Downloaded", 95, HorizontalAlignment.Right);
             Col(epList, "Uploaded", 95, HorizontalAlignment.Right);
             ContextMenuStrip em = new ContextMenuStrip();
+            em.Renderer = ModernMenuRenderer.Instance;
             em.Items.Add("Copy remote address", null, delegate { if (epList.SelectedItems.Count > 0) Clipboard.SetText((string)epList.SelectedItems[0].Tag); });
             epList.ContextMenuStrip = em;
 
@@ -536,6 +896,13 @@ namespace NetSpeedBoss
             List<ProcView> list = pm.Snapshot();
             bool etw = pm.EtwActive;
             if (chkActiveOnly.Checked) list.RemoveAll(delegate(ProcView v) { return v.Rx + v.Tx <= 0 && v.Conns == 0; });
+            string query = txtAppSearch != null ? txtAppSearch.Text.Trim() : "";
+            if (query.Length > 0)
+                list.RemoveAll(delegate(ProcView v)
+                {
+                    return (v.Name == null || v.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0) &&
+                           (v.Path == null || v.Path.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0);
+                });
             list.Sort(CompareProc);
 
             double sumRx = 0, sumTx = 0;
@@ -546,7 +913,9 @@ namespace NetSpeedBoss
                 ? "● Live per-app tracking  ·  " + list.Count + " apps  ·  ↓ " + Fmt.Speed(sumRx, s.Unit) + "  ↑ " + Fmt.Speed(sumTx, s.Unit)
                 : "⚠ " + pm.Status + "  Showing TCP connections only.";
             if (appsStatus.Text != status) appsStatus.Text = status;
-            appsStatus.ForeColor = etw ? Color.FromArgb(16, 124, 16) : Color.FromArgb(157, 93, 0);
+            appsStatus.ForeColor = etw
+                ? (Theme.IsDark ? Color.FromArgb(52, 211, 153) : Color.FromArgb(16, 124, 16))
+                : (Theme.IsDark ? Color.FromArgb(251, 191, 36) : Color.FromArgb(157, 93, 0));
 
             procList.BeginUpdate();
             // reuse items where possible to avoid flicker
@@ -627,11 +996,14 @@ namespace NetSpeedBoss
             limitPanel.Controls.Add(limitBar); limitPanel.Controls.Add(limitLabel);
 
             Panel chartHost = new Panel(); chartHost.Dock = DockStyle.Fill; chartHost.Padding = new Padding(6);
+            CardPanel chartCard = new CardPanel(); chartCard.Dock = DockStyle.Fill; chartCard.Padding = new Padding(8, 6, 8, 6);
             usageChart = new UsageChart(); usageChart.Usage = app.Usage; usageChart.S = app.S; usageChart.Dock = DockStyle.Fill;
             Label ct = new Label(); ct.Text = "Daily usage, last 30 days"; ct.Font = new Font("Segoe UI Semibold", 9.5f);
-            ct.Dock = DockStyle.Top; ct.Height = 24; ct.BackColor = Theme.Card; ct.Padding = new Padding(6, 4, 0, 0);
-            chartHost.Controls.Add(usageChart); chartHost.Controls.Add(ct);
+            ct.Dock = DockStyle.Top; ct.Height = 24; ct.Padding = new Padding(2, 2, 0, 0);
+            chartCard.Controls.Add(usageChart); chartCard.Controls.Add(ct);
+            chartHost.Controls.Add(chartCard);
 
+            CardPanel listCard = new CardPanel(); listCard.Dock = DockStyle.Fill; listCard.Padding = new Padding(8, 6, 8, 6);
             Panel listHost = new Panel(); listHost.Dock = DockStyle.Fill; listHost.Padding = new Padding(0, 0, 4, 0);
             usageList = new DbListView(); usageList.Dock = DockStyle.Fill;
             Col(usageList, "Date", 130, HorizontalAlignment.Left);
@@ -656,7 +1028,8 @@ namespace NetSpeedBoss
                 }
             };
             btns.Controls.Add(reset); btns.Controls.Add(export);
-            listHost.Controls.Add(usageList); listHost.Controls.Add(btns);
+            listCard.Controls.Add(usageList); listCard.Controls.Add(btns);
+            listHost.Controls.Add(listCard);
 
             usageTopApps = new UsageTopAppsPanel(); usageTopApps.App = app; usageTopApps.Dock = DockStyle.Fill;
             Panel topAppsHost = new Panel(); topAppsHost.Dock = DockStyle.Fill; topAppsHost.Padding = new Padding(4, 0, 0, 0);
@@ -683,8 +1056,8 @@ namespace NetSpeedBoss
 
         Control BuildRangePanel()
         {
-            Panel host = new Panel(); host.Dock = DockStyle.Top; host.Height = 112; host.Padding = new Padding(6, 4, 6, 4);
-            Panel card = new Panel(); card.Dock = DockStyle.Fill; card.BackColor = Theme.Card; card.Padding = new Padding(10, 6, 10, 6);
+            Panel host = new Panel(); host.Dock = DockStyle.Top; host.Height = 114; host.Padding = new Padding(6, 4, 6, 4);
+            CardPanel card = new CardPanel(); card.Dock = DockStyle.Fill; card.Padding = new Padding(12, 8, 12, 8);
 
             FlowLayoutPanel row = new FlowLayoutPanel(); row.Dock = DockStyle.Top; row.Height = 62; row.WrapContents = true;
             Label t = new Label(); t.Text = "Date range"; t.Font = new Font("Segoe UI Semibold", 9.5f); t.AutoSize = true; t.Margin = new Padding(0, 7, 12, 0);
@@ -867,8 +1240,9 @@ namespace NetSpeedBoss
 
         // =================================================================== SYSTEM
         UtilCard cpuCard, gpuCard, memCard;
-        SpecList specs, netSpecs;
+        SpecList specs, netSpecs, osSpecs;
         Panel specHost;
+        TableLayoutPanel sysBottomRow;
         Button btnCheckIp, btnCopyIp;
         SystemInfo sysInfo;
         PublicIpInfo publicIp;
@@ -880,20 +1254,32 @@ namespace NetSpeedBoss
         {
             TabPage p = Page("System");
             TableLayoutPanel cards = new TableLayoutPanel();
-            cards.Dock = DockStyle.Top; cards.Height = 236; cards.ColumnCount = 3; cards.RowCount = 1;
+            cards.Dock = DockStyle.Top; cards.Height = 194; cards.ColumnCount = 3; cards.RowCount = 1;
             for (int i = 0; i < 3; i++) cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
             SystemMonitor m = app.Sys;
-            cpuCard = new UtilCard(); cpuCard.Title = "CPU"; cpuCard.Accent = Color.FromArgb(59, 130, 246); cpuCard.History = delegate(int ago) { return m.CpuAt(ago); };
-            gpuCard = new UtilCard(); gpuCard.Title = "GPU"; gpuCard.Accent = Color.FromArgb(34, 160, 90);
-            memCard = new UtilCard(); memCard.Title = "Memory"; memCard.Accent = Color.FromArgb(150, 80, 230); memCard.History = delegate(int ago) { return m.MemAt(ago); };
+            cpuCard = new UtilCard(); cpuCard.Title = "CPU"; cpuCard.Kind = "cpu"; cpuCard.Accent = Color.FromArgb(59, 130, 246); cpuCard.History = delegate(int ago) { return m.CpuAt(ago); };
+            gpuCard = new UtilCard(); gpuCard.Title = "GPU"; gpuCard.Kind = "gpu"; gpuCard.Accent = Color.FromArgb(34, 160, 90);
+            memCard = new UtilCard(); memCard.Title = "Memory"; memCard.Kind = "ram"; memCard.Accent = Color.FromArgb(150, 80, 230); memCard.History = delegate(int ago) { return m.MemAt(ago); };
             memCard.Brand = new BrandStyle("ram", "RAM", Color.FromArgb(150, 90, 235), Color.FromArgb(90, 40, 170), Color.White);
             foreach (UtilCard c in new UtilCard[] { cpuCard, gpuCard, memCard }) { c.Dock = DockStyle.Fill; cards.Controls.Add(c); }
 
-            specHost = new Panel(); specHost.Dock = DockStyle.Fill; specHost.AutoScroll = true; specHost.Padding = new Padding(6, 4, 6, 6);
-            netSpecs = new SpecList(); netSpecs.Heading = "Network & ISP"; netSpecs.Loading = "Reading network information..."; netSpecs.Dock = DockStyle.Top; netSpecs.Height = 120;
+            specHost = new Panel(); specHost.Dock = DockStyle.Fill; specHost.AutoScroll = true; specHost.Padding = new Padding(6, 2, 6, 6);
+            specs = new SpecList(); specs.Heading = "Hardware"; specs.Loading = "Reading hardware specifications..."; specs.Dock = DockStyle.Top; specs.Height = 120;
             Panel gap = new Panel(); gap.Dock = DockStyle.Top; gap.Height = 8;
-            specs = new SpecList(); specs.Dock = DockStyle.Top; specs.Height = 120;
-            FlowLayoutPanel bar = new FlowLayoutPanel(); bar.Dock = DockStyle.Top; bar.Height = 34; bar.FlowDirection = FlowDirection.RightToLeft;
+
+            sysBottomRow = new TableLayoutPanel();
+            sysBottomRow.Dock = DockStyle.Top; sysBottomRow.Height = 180; sysBottomRow.ColumnCount = 2; sysBottomRow.RowCount = 1;
+            sysBottomRow.Margin = Padding.Empty; sysBottomRow.Padding = Padding.Empty;
+            sysBottomRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            sysBottomRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            sysBottomRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            netSpecs = new SpecList(); netSpecs.Heading = "Network & ISP"; netSpecs.Loading = "Reading network information..."; netSpecs.Dock = DockStyle.Fill; netSpecs.Margin = new Padding(0, 0, 4, 0);
+            osSpecs = new SpecList(); osSpecs.Heading = "Operating System"; osSpecs.Loading = "Reading Windows details..."; osSpecs.Dock = DockStyle.Fill; osSpecs.Margin = new Padding(4, 0, 0, 0);
+            sysBottomRow.Controls.Add(netSpecs, 0, 0);
+            sysBottomRow.Controls.Add(osSpecs, 1, 0);
+
+            FlowLayoutPanel bar = new FlowLayoutPanel(); bar.Dock = DockStyle.Top; bar.Height = 32; bar.FlowDirection = FlowDirection.RightToLeft;
             Button copy = new Button(); copy.Text = "Copy system info"; copy.AutoSize = true;
             copy.Click += delegate { if (sysInfo != null) try { Clipboard.SetText(BuildSystemClipboardText()); copy.Text = "Copied ✔"; } catch { } };
             btnCopyIp = new Button(); btnCopyIp.Text = "Copy IP"; btnCopyIp.AutoSize = true;
@@ -905,7 +1291,8 @@ namespace NetSpeedBoss
             btnCheckIp = new Button(); btnCheckIp.Text = "Check Public IP & ISP"; btnCheckIp.AutoSize = true;
             btnCheckIp.Click += delegate { RequestPublicIp(); };
             bar.Controls.Add(copy); bar.Controls.Add(btnCopyIp); bar.Controls.Add(btnCheckIp);
-            specHost.Controls.Add(specs); specHost.Controls.Add(gap); specHost.Controls.Add(netSpecs); specHost.Controls.Add(bar);
+
+            specHost.Controls.Add(sysBottomRow); specHost.Controls.Add(gap); specHost.Controls.Add(specs); specHost.Controls.Add(bar);
             p.Controls.Add(specHost); p.Controls.Add(cards);
             return p;
         }
@@ -959,8 +1346,14 @@ namespace NetSpeedBoss
                 rows.Add(new SpecRow("Public IP & ISP", "Checked automatically when dashboard opens", null));
             }
             netSpecs.Rows = rows;
-            netSpecs.Height = netSpecs.ContentHeight;
+            SyncBottomRowHeight();
             netSpecs.Invalidate();
+        }
+
+        void SyncBottomRowHeight()
+        {
+            if (sysBottomRow == null || netSpecs == null || osSpecs == null) return;
+            sysBottomRow.Height = Math.Max(netSpecs.ContentHeight, osSpecs.ContentHeight);
         }
 
         void RequestPublicIp()
@@ -1018,10 +1411,12 @@ namespace NetSpeedBoss
                 memCard.Brand = new BrandStyle("ram", parts.Length > 2 ? parts[2] : "RAM", Color.FromArgb(150, 90, 235), Color.FromArgb(90, 40, 170), Color.White);
                 memCard.Series = parts[0] + " " + parts[1];
             }
-            List<SpecRow> rows = new List<SpecRow>(si.Rows);
-            rows.Add(new SpecRow("Uptime", SystemInfo.Uptime(), null));
-            specs.Rows = rows;
+            specs.Rows = new List<SpecRow>(si.HardwareRows);
             specs.Height = specs.ContentHeight;
+            List<SpecRow> osRows = new List<SpecRow>(si.OsRows);
+            osRows.Add(new SpecRow("Uptime", SystemInfo.Uptime(), null));
+            osSpecs.Rows = osRows;
+            SyncBottomRowHeight();
             TickSystem();
         }
 
@@ -1060,11 +1455,233 @@ namespace NetSpeedBoss
                             "committed " + Fmt.Size(m.CommitUsed) + " / " + Fmt.Size(m.CommitTotal);
 
             cpuCard.Invalidate(); gpuCard.Invalidate(); memCard.Invalidate();
-            if (specs.Rows.Count > 0)
+            if (osSpecs != null && osSpecs.Rows.Count > 0)
             {
-                SpecRow last = specs.Rows[specs.Rows.Count - 1];
-                if (last.Label == "Uptime") { last.Value = SystemInfo.Uptime(); specs.Invalidate(); }
+                SpecRow last = osSpecs.Rows[osSpecs.Rows.Count - 1];
+                if (last.Label == "Uptime") { last.Value = SystemInfo.Uptime(); osSpecs.Invalidate(); }
             }
+        }
+
+        // =================================================================== GAMING HUD
+        TabPage BuildGamingHud()
+        {
+            TabPage p = Page("Gaming HUD");
+            TableLayoutPanel layout = new TableLayoutPanel();
+            layout.Dock = DockStyle.Fill; layout.ColumnCount = 2; layout.RowCount = 1;
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            Panel leftScroll = new Panel(); leftScroll.Dock = DockStyle.Fill; leftScroll.AutoScroll = true; leftScroll.Padding = new Padding(4, 4, 8, 4);
+            TableLayoutPanel t = new TableLayoutPanel();
+            t.AutoSize = true; t.ColumnCount = 2; t.Location = new Point(4, 2);
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 152));
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+            Action<string> header = delegate(string h)
+            {
+                Label l = new Label(); l.Text = h; l.Font = new Font("Segoe UI Semibold", 10f); l.AutoSize = true; l.Margin = new Padding(0, 12, 0, 4);
+                t.Controls.Add(l); t.SetColumnSpan(l, 2);
+            };
+            Action<string, Control> row = delegate(string label, Control c)
+            {
+                Label l = new Label(); l.Text = label; l.AutoSize = true; l.Margin = new Padding(0, 6, 8, 2);
+                c.Margin = new Padding(0, 2, 0, 2);
+                t.Controls.Add(l); t.Controls.Add(c);
+            };
+            Func<string, CheckBox> chk = delegate(string txt)
+            {
+                CheckBox c = new CheckBox(); c.Text = txt; c.AutoSize = true;
+                c.CheckedChanged += delegate { SaveUi(); };
+                return c;
+            };
+            Func<int, int, NumericUpDown> num = delegate(int min, int max)
+            {
+                NumericUpDown n = new NumericUpDown(); n.Minimum = min; n.Maximum = max; n.Width = 58;
+                n.ValueChanged += delegate { SaveUi(); };
+                return n;
+            };
+
+            header("Overlay & auto-detection");
+            sGameAuto = chk("Auto-show for all Windows GPU games"); row("", sGameAuto);
+            sGameShow = chk("Pin / preview Gaming HUD overlay now"); row("", sGameShow);
+            sGameClickThrough = chk("Click-through (ignore mouse clicks)"); row("", sGameClickThrough);
+
+            FlowLayoutPanel gpos = new FlowLayoutPanel(); gpos.AutoSize = true; gpos.WrapContents = false;
+            sGameCorner = new ComboBox(); sGameCorner.DropDownStyle = ComboBoxStyle.DropDownList; sGameCorner.Width = 126;
+            sGameCorner.Items.AddRange(new object[] { "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right" });
+            sGameCorner.SelectedIndexChanged += delegate { if (!loadingSettings) { app.S.GameHudX = int.MinValue; SaveUi(); } };
+            Button resetHudPos = new Button(); resetHudPos.Text = "Reset position"; resetHudPos.AutoSize = true;
+            resetHudPos.Click += delegate { app.S.GameHudX = int.MinValue; app.Changed(); };
+            gpos.Controls.Add(sGameCorner); gpos.Controls.Add(resetHudPos);
+            row("Screen corner", gpos);
+
+            header("Transparency & visual theme");
+            FlowLayoutPanel opRow = new FlowLayoutPanel(); opRow.AutoSize = true; opRow.WrapContents = false;
+            sGameOpacity = new TrackBar(); sGameOpacity.Minimum = 0; sGameOpacity.Maximum = 99; sGameOpacity.TickFrequency = 10; sGameOpacity.Width = 180;
+            sGameOpacity.ValueChanged += delegate
+            {
+                if (lblGameOpacity != null) lblGameOpacity.Text = sGameOpacity.Value + "%";
+                SaveUi();
+            };
+            lblGameOpacity = new Label(); lblGameOpacity.AutoSize = true; lblGameOpacity.Margin = new Padding(6, 8, 0, 0);
+            opRow.Controls.Add(sGameOpacity); opRow.Controls.Add(lblGameOpacity);
+            row("Background opacity", opRow);
+
+            FlowLayoutPanel preRow = new FlowLayoutPanel(); preRow.AutoSize = true; preRow.WrapContents = false;
+            sGamePreset = new ComboBox(); sGamePreset.DropDownStyle = ComboBoxStyle.DropDownList; sGamePreset.Width = 160;
+            sGamePreset.Items.AddRange(new object[] { "Metal Dark", "Obsidian Neon", "Crimson Tactical", "Emerald HUD", "Custom" });
+            sGamePreset.SelectedIndexChanged += delegate
+            {
+                if (loadingSettings || sGamePreset.SelectedIndex < 0 || sGamePreset.SelectedIndex >= 4) return;
+                ApplyHudPreset(sGamePreset.SelectedIndex);
+            };
+            Button resetColors = new Button(); resetColors.Text = "Reset colors"; resetColors.AutoSize = true;
+            resetColors.Click += delegate { ApplyHudPreset(0); };
+            preRow.Controls.Add(sGamePreset); preRow.Controls.Add(resetColors);
+            row("Color preset", preRow);
+
+            FlowLayoutPanel hudCols = new FlowLayoutPanel(); hudCols.AutoSize = true; hudCols.MaximumSize = new Size(288, 0); hudCols.WrapContents = true;
+            bHudBg = HudColorButton("Background"); bHudBorder = HudColorButton("Border");
+            bHudText = HudColorButton("Text"); bHudFps = HudColorButton("FPS");
+            bHudGpu = HudColorButton("GPU"); bHudCpu = HudColorButton("CPU");
+            bHudMem = HudColorButton("Memory"); bHudNet = HudColorButton("Network");
+            hudCols.Controls.AddRange(new Control[] { bHudBg, bHudBorder, bHudText, bHudFps, bHudGpu, bHudCpu, bHudMem, bHudNet });
+            row("Custom colors", hudCols);
+
+            header("RAG status thresholds (Red / Amber / Green)");
+            sGameRag = chk("Enable RAG colors (FPS, Temp, Load & Ping)"); row("", sGameRag);
+            nFpsG = num(15, 240); nFpsA = num(10, 200);
+            row("FPS (Green >= / Amber >=)", PairRow(nFpsG, "/", nFpsA));
+            nTempG = num(40, 95); nTempA = num(50, 105);
+            row("Temp °C (Green < / Amber <)", PairRow(nTempG, "/", nTempA));
+            nPingG = num(10, 200); nPingA = num(20, 400);
+            row("Ping ms (Green < / Amber <)", PairRow(nPingG, "/", nPingA));
+            nLoadA = num(40, 95); nLoadR = num(50, 99);
+            row("Load % (Amber >= / Red >=)", PairRow(nLoadA, "/", nLoadR));
+
+            header("Visible metrics");
+            FlowLayoutPanel vis = new FlowLayoutPanel(); vis.AutoSize = true; vis.MaximumSize = new Size(288, 0); vis.WrapContents = true;
+            sHudFps = chk("FPS & frame time"); sHudGpu = chk("GPU temp / fan / W");
+            sHudCpu = chk("CPU & cores"); sHudMem = chk("Memory & VRAM");
+            sHudNet = chk("Net speed & ping"); sHudGraph = chk("Waveform graph");
+            foreach (CheckBox c in new CheckBox[] { sHudFps, sHudGpu, sHudCpu, sHudMem, sHudNet, sHudGraph })
+            {
+                c.Margin = new Padding(0, 2, 12, 2);
+                vis.Controls.Add(c);
+            }
+            row("Sections", vis);
+
+            leftScroll.Controls.Add(t);
+
+            Panel rightCol = new Panel(); rightCol.Dock = DockStyle.Fill; rightCol.Padding = new Padding(4);
+            CardPanel prevCard = new CardPanel(); prevCard.Dock = DockStyle.Top; prevCard.Height = 312; prevCard.Padding = new Padding(10, 8, 10, 10);
+            Label pl = new Label(); pl.Text = "Live HUD preview (transparency & RAG colors)"; pl.Font = new Font("Segoe UI Semibold", 9.5f); pl.Dock = DockStyle.Top; pl.Height = 24;
+            hudPreview = new GameHudPreview(); hudPreview.App = app; hudPreview.Dock = DockStyle.Fill;
+            prevCard.Controls.Add(hudPreview); prevCard.Controls.Add(pl);
+
+            Panel diagGap = new Panel(); diagGap.Dock = DockStyle.Top; diagGap.Height = 8;
+            gameDiagList = new SpecList(); gameDiagList.Heading = "Game & graphics detection"; gameDiagList.Loading = "Sampling GPU and foreground state...";
+            gameDiagList.Dock = DockStyle.Fill;
+
+            rightCol.Controls.Add(gameDiagList);
+            rightCol.Controls.Add(diagGap);
+            rightCol.Controls.Add(prevCard);
+
+            layout.Controls.Add(leftScroll, 0, 0);
+            layout.Controls.Add(rightCol, 1, 0);
+            p.Controls.Add(layout);
+            return p;
+        }
+
+        static FlowLayoutPanel PairRow(Control a, string sep, Control b)
+        {
+            FlowLayoutPanel fp = new FlowLayoutPanel(); fp.AutoSize = true; fp.WrapContents = false;
+            Label l = new Label(); l.Text = sep; l.AutoSize = true; l.Margin = new Padding(6, 6, 6, 0);
+            fp.Controls.Add(a); fp.Controls.Add(l); fp.Controls.Add(b);
+            return fp;
+        }
+
+        Button HudColorButton(string text)
+        {
+            Button b = new Button(); b.Text = text; b.AutoSize = true; b.Margin = new Padding(0, 0, 6, 4);
+            b.TextImageRelation = TextImageRelation.ImageBeforeText; b.ImageAlign = ContentAlignment.MiddleLeft;
+            b.Click += delegate
+            {
+                using (ColorDialog d = new ColorDialog())
+                {
+                    d.FullOpen = true;
+                    d.Color = GetColor(b);
+                    if (d.ShowDialog(this) != DialogResult.OK) return;
+                    if (b == bHudBg) app.S.GameHudBackColor = d.Color;
+                    else if (b == bHudBorder) app.S.GameHudBorderColor = d.Color;
+                    else if (b == bHudText) app.S.GameHudTextColor = d.Color;
+                    else if (b == bHudFps) app.S.GameHudFpsColor = d.Color;
+                    else if (b == bHudGpu) app.S.GameHudGpuColor = d.Color;
+                    else if (b == bHudCpu) app.S.GameHudCpuColor = d.Color;
+                    else if (b == bHudMem) app.S.GameHudMemColor = d.Color;
+                    else if (b == bHudNet) app.S.GameHudNetColor = d.Color;
+                    if (sGamePreset != null) { loadingSettings = true; sGamePreset.SelectedIndex = 4; loadingSettings = false; }
+                    app.Changed();
+                    if (hudPreview != null) hudPreview.Invalidate();
+                }
+            };
+            return b;
+        }
+
+        void ApplyHudPreset(int idx)
+        {
+            Settings s = app.S;
+            switch (idx)
+            {
+                case 1: // Obsidian Neon
+                    s.GameHudBackColor = Color.FromArgb(10, 12, 18); s.GameHudBorderColor = Color.FromArgb(88, 101, 242);
+                    s.GameHudTextColor = Color.FromArgb(242, 246, 255); s.GameHudFpsColor = Color.FromArgb(34, 211, 238);
+                    s.GameHudGpuColor = Color.FromArgb(52, 211, 153); s.GameHudCpuColor = Color.FromArgb(129, 140, 248);
+                    s.GameHudMemColor = Color.FromArgb(232, 121, 249); s.GameHudNetColor = Color.FromArgb(250, 204, 21);
+                    break;
+                case 2: // Crimson Tactical
+                    s.GameHudBackColor = Color.FromArgb(18, 12, 14); s.GameHudBorderColor = Color.FromArgb(153, 27, 27);
+                    s.GameHudTextColor = Color.FromArgb(250, 242, 242); s.GameHudFpsColor = Color.FromArgb(248, 113, 113);
+                    s.GameHudGpuColor = Color.FromArgb(251, 146, 60); s.GameHudCpuColor = Color.FromArgb(251, 191, 36);
+                    s.GameHudMemColor = Color.FromArgb(244, 114, 182); s.GameHudNetColor = Color.FromArgb(56, 189, 248);
+                    break;
+                case 3: // Emerald HUD
+                    s.GameHudBackColor = Color.FromArgb(10, 18, 15); s.GameHudBorderColor = Color.FromArgb(16, 120, 82);
+                    s.GameHudTextColor = Color.FromArgb(236, 253, 245); s.GameHudFpsColor = Color.FromArgb(52, 211, 153);
+                    s.GameHudGpuColor = Color.FromArgb(110, 231, 183); s.GameHudCpuColor = Color.FromArgb(96, 165, 250);
+                    s.GameHudMemColor = Color.FromArgb(167, 139, 250); s.GameHudNetColor = Color.FromArgb(251, 191, 36);
+                    break;
+                default: // Metal Dark
+                    s.GameHudBackColor = Color.FromArgb(14, 16, 20); s.GameHudBorderColor = Color.FromArgb(62, 70, 84);
+                    s.GameHudTextColor = Color.FromArgb(240, 244, 248); s.GameHudFpsColor = Color.FromArgb(56, 189, 248);
+                    s.GameHudGpuColor = Color.FromArgb(74, 222, 128); s.GameHudCpuColor = Color.FromArgb(96, 165, 250);
+                    s.GameHudMemColor = Color.FromArgb(192, 132, 252); s.GameHudNetColor = Color.FromArgb(251, 191, 36);
+                    break;
+            }
+            app.Changed();
+            LoadSettingsIntoUi();
+            if (hudPreview != null) hudPreview.Invalidate();
+        }
+
+        void TickGamingHud()
+        {
+            if (hudPreview != null) hudPreview.Invalidate();
+            if (gameDiagList == null) return;
+            if (app.Sys.Gpus.Count == 0) app.Sys.SampleGpu();
+            GameTelemetry t = app.Game;
+            string gpuDisp = t.GpuName;
+            if (string.IsNullOrEmpty(gpuDisp) && app.Sys.Gpus.Count > 0) gpuDisp = app.Sys.Gpus[0].Name;
+            List<SpecRow> rows = new List<SpecRow>();
+            rows.Add(new SpecRow("Overlay mode", t.GameActive ? "Active (" + t.GameName + ")" : (app.S.GameHudPinned ? "Pinned preview" : (app.S.GameHudAuto ? "Armed (auto-detect)" : "Disabled")), null));
+            rows.Add(new SpecRow("Detection", string.IsNullOrEmpty(t.DetectReason) ? "Waiting for fullscreen / 3D GPU game" : t.DetectReason, null));
+            rows.Add(new SpecRow("Graphics API", string.IsNullOrEmpty(t.GraphicsApi) ? "GPU Engine counters" : t.GraphicsApi, null));
+            BrandStyle gBrand = app.Sys.Gpus.Count > 0 ? app.Sys.Gpus[0].Brand : null;
+            rows.Add(new SpecRow("Active GPU", string.IsNullOrEmpty(gpuDisp) ? "Detecting..." : gpuDisp + (t.GpuUtil >= 0 ? "   ·   " + t.GpuUtil.ToString("0") + "%" : ""), gBrand));
+            rows.Add(new SpecRow("FPS trace", app.IsAdmin ? (t.FpsEtwActive ? "ETW DXGI + D3D9 ready" : "Standby") : "Standard user (Restart as Admin for DXGI/D3D9 FPS)", null));
+            rows.Add(new SpecRow("Online ping", t.PingMs >= 0 ? t.PingMs + " ms (" + t.PingLabel + (t.PingTarget.Length > 0 ? " · " + t.PingTarget : "") + ")" : "Idle", null));
+            gameDiagList.Rows = rows;
+            gameDiagList.Invalidate();
         }
 
         // =================================================================== SETTINGS
@@ -1095,10 +1712,17 @@ namespace NetSpeedBoss
                 return c;
             };
 
+            header("Appearance");
+            sThemeMode = new ComboBox(); sThemeMode.DropDownStyle = ComboBoxStyle.DropDownList; sThemeMode.Width = 220;
+            sThemeMode.Items.AddRange(new object[] { "Follow Windows theme", "Light", "Dark" });
+            sThemeMode.SelectedIndexChanged += delegate { SaveUi(); };
+            row("Dashboard theme", sThemeMode);
+
             header("Administrator & Startup");
             Label adminState = new Label(); adminState.AutoSize = true;
+            adminState.Tag = "keepcolor";
             adminState.Font = new Font("Segoe UI Semibold", 9f);
-            adminState.ForeColor = app.IsAdmin ? Color.FromArgb(6, 95, 70) : Color.FromArgb(146, 64, 14);
+            adminState.ForeColor = app.IsAdmin ? Color.FromArgb(16, 185, 129) : Color.FromArgb(217, 119, 6);
             adminState.Text = app.IsAdmin
                 ? "✔ Running as Administrator — live per-app speeds and app usage logs are active."
                 : "Running in Standard mode — restart as Administrator once to unlock per-app speeds.";
@@ -1106,6 +1730,7 @@ namespace NetSpeedBoss
             if (!app.IsAdmin)
             {
                 Button el = new Button(); el.Text = "Restart as Administrator"; el.AutoSize = true;
+                el.Tag = "primary";
                 el.FlatStyle = FlatStyle.Flat; el.FlatAppearance.BorderSize = 0;
                 el.BackColor = Color.FromArgb(217, 119, 6); el.ForeColor = Color.White;
                 el.Font = new Font("Segoe UI Semibold", 9f); el.Padding = new Padding(10, 3, 10, 3);
@@ -1137,7 +1762,7 @@ namespace NetSpeedBoss
             row("Font", tFont);
             tSize = new NumericUpDown(); tSize.Minimum = 6; tSize.Maximum = 16; tSize.DecimalPlaces = 1; tSize.Increment = 0.5m; tSize.Width = 70;
             tSize.ValueChanged += delegate { SaveUi(); };
-            row("Text size (pt)", tSize);
+            row("Taskbar text size (pt)", tSize);
             tBold = check("Bold text"); row("", tBold);
             tAuto = check("Match Windows light / dark theme colors"); row("", tAuto);
             FlowLayoutPanel tcol = new FlowLayoutPanel(); tcol.AutoSize = true; tcol.WrapContents = false;
@@ -1160,7 +1785,7 @@ namespace NetSpeedBoss
             row("Opacity", sOpacity);
             sFont = new NumericUpDown(); sFont.Minimum = 6; sFont.Maximum = 30; sFont.DecimalPlaces = 1; sFont.Increment = 0.5m; sFont.Width = 70;
             sFont.ValueChanged += delegate { SaveUi(); };
-            row("Text size (pt)", sFont);
+            row("Floating text size (pt)", sFont);
             FlowLayoutPanel colors = new FlowLayoutPanel(); colors.AutoSize = true; colors.WrapContents = false;
             bDown = ColorButton("Download"); bUp = ColorButton("Upload"); bBack = ColorButton("Background"); bText = ColorButton("Text");
             colors.Controls.AddRange(new Control[] { bDown, bUp, bBack, bText });
@@ -1269,6 +1894,14 @@ namespace NetSpeedBoss
             if (b == bUp) return app.S.UpColor;
             if (b == bBack) return app.S.BackColor;
             if (b == bTbText) return app.S.TaskbarTextColor;
+            if (b == bHudBg) return app.S.GameHudBackColor;
+            if (b == bHudBorder) return app.S.GameHudBorderColor;
+            if (b == bHudText) return app.S.GameHudTextColor;
+            if (b == bHudFps) return app.S.GameHudFpsColor;
+            if (b == bHudGpu) return app.S.GameHudGpuColor;
+            if (b == bHudCpu) return app.S.GameHudCpuColor;
+            if (b == bHudMem) return app.S.GameHudMemColor;
+            if (b == bHudNet) return app.S.GameHudNetColor;
             return app.S.TextColor;
         }
 
@@ -1316,8 +1949,32 @@ namespace NetSpeedBoss
             sStartup.Checked = app.StartupEnabled;
             sElevated.Checked = app.ElevatedStartupEnabled;
             sAutoUpdate.Checked = s.AutoCheckUpdates;
-            foreach (Button b in new Button[] { bDown, bUp, bBack, bText, bTbText })
+            if (sThemeMode != null) sThemeMode.SelectedIndex = (int)s.ThemeMode;
+            if (sGameAuto != null)
             {
+                sGameAuto.Checked = s.GameHudAuto;
+                sGameShow.Checked = s.GameHudPinned;
+                sGameClickThrough.Checked = s.GameHudClickThrough;
+                sGameCorner.SelectedIndex = Math.Max(0, Math.Min(3, s.GameHudCorner));
+                sGameOpacity.Value = Math.Max(0, Math.Min(99, s.GameHudOpacity));
+                lblGameOpacity.Text = sGameOpacity.Value + "%";
+                sGameRag.Checked = s.GameHudRag;
+                nFpsG.Value = Math.Max(15, Math.Min(240, s.GameHudFpsGreen));
+                nFpsA.Value = Math.Max(10, Math.Min(200, s.GameHudFpsAmber));
+                nTempG.Value = Math.Max(40, Math.Min(95, s.GameHudTempGreen));
+                nTempA.Value = Math.Max(50, Math.Min(105, s.GameHudTempAmber));
+                nPingG.Value = Math.Max(10, Math.Min(200, s.GameHudPingGreen));
+                nPingA.Value = Math.Max(20, Math.Min(400, s.GameHudPingAmber));
+                nLoadA.Value = Math.Max(40, Math.Min(95, s.GameHudLoadAmber));
+                nLoadR.Value = Math.Max(50, Math.Min(99, s.GameHudLoadRed));
+                sHudFps.Checked = s.GameHudShowFps; sHudGpu.Checked = s.GameHudShowGpu;
+                sHudCpu.Checked = s.GameHudShowCpu; sHudMem.Checked = s.GameHudShowMem;
+                sHudNet.Checked = s.GameHudShowNet; sHudGraph.Checked = s.GameHudShowGraph;
+                if (sGamePreset.SelectedIndex < 0) sGamePreset.SelectedIndex = 0;
+            }
+            foreach (Button b in new Button[] { bDown, bUp, bBack, bText, bTbText, bHudBg, bHudBorder, bHudText, bHudFps, bHudGpu, bHudCpu, bHudMem, bHudNet })
+            {
+                if (b == null) continue;
                 Image old = b.Image;
                 b.Image = Swatch(GetColor(b));
                 if (old != null) old.Dispose();
@@ -1344,6 +2001,27 @@ namespace NetSpeedBoss
             s.MonthlyLimitGB = (double)sLimit.Value;
             s.MonthStartDay = (int)sStartDay.Value;
             s.AutoCheckUpdates = sAutoUpdate.Checked;
+            DashTheme prevTheme = s.ThemeMode;
+            if (sThemeMode != null && sThemeMode.SelectedIndex >= 0) s.ThemeMode = (DashTheme)sThemeMode.SelectedIndex;
+            if (prevTheme != s.ThemeMode) ApplyTheme();
+            bool gameClickWas = s.GameHudClickThrough;
+            bool gamePinWas = s.GameHudPinned;
+            if (sGameAuto != null)
+            {
+                s.GameHudAuto = sGameAuto.Checked;
+                s.GameHudClickThrough = sGameClickThrough.Checked;
+                if (sGameCorner.SelectedIndex >= 0) s.GameHudCorner = sGameCorner.SelectedIndex;
+                s.GameHudOpacity = sGameOpacity.Value;
+                s.GameHudRag = sGameRag.Checked;
+                s.GameHudFpsGreen = (int)nFpsG.Value; s.GameHudFpsAmber = (int)nFpsA.Value;
+                s.GameHudTempGreen = (int)nTempG.Value; s.GameHudTempAmber = (int)nTempA.Value;
+                s.GameHudPingGreen = (int)nPingG.Value; s.GameHudPingAmber = (int)nPingA.Value;
+                s.GameHudLoadAmber = (int)nLoadA.Value; s.GameHudLoadRed = (int)nLoadR.Value;
+                s.GameHudShowFps = sHudFps.Checked; s.GameHudShowGpu = sHudGpu.Checked;
+                s.GameHudShowCpu = sHudCpu.Checked; s.GameHudShowMem = sHudMem.Checked;
+                s.GameHudShowNet = sHudNet.Checked; s.GameHudShowGraph = sHudGraph.Checked;
+                if (hudPreview != null) hudPreview.Invalidate();
+            }
             savingUi = true;
             try
             {
@@ -1356,11 +2034,14 @@ namespace NetSpeedBoss
                     if (!wantMeter && s.ShowMeter) app.ToggleMeter();
                     if (!wantTb && s.ShowOnTaskbar) app.ToggleTaskbar();
                 }
+                if (sGameShow != null && sGameShow.Checked != gamePinWas) app.ToggleGameHud();
                 loadingSettings = true;
                 sShowMeter.Checked = s.ShowMeter; sTaskbar.Checked = s.ShowOnTaskbar;
+                if (sGameShow != null) sGameShow.Checked = s.GameHudPinned;
                 loadingSettings = false;
                 app.Changed();
                 if (clickWas != s.ClickThrough) app.MeterClickThroughChanged();
+                if (gameClickWas != s.GameHudClickThrough) app.GameHudClickThroughChanged();
             }
             finally { savingUi = false; }
             RefreshAccents();
@@ -1375,9 +2056,124 @@ namespace NetSpeedBoss
             cDown.Invalidate(); cUp.Invalidate(); cPeakDown.Invalidate(); cPeakUp.Invalidate();
         }
 
+        void PaintPingPill(object sender, PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(Theme.Card);
+            Theme.DrawCard(g, lblPing.ClientRectangle, Theme.CardAlt, Theme.Border, null, 10);
+            Color dot = Theme.Muted;
+            string text = "Ping: ...";
+            if (lastPingMs >= 0)
+            {
+                text = "Ping: " + lastPingMs + " ms";
+                dot = lastPingMs < 50 ? Color.FromArgb(16, 185, 129)
+                    : (lastPingMs < 120 ? Color.FromArgb(217, 119, 6) : Color.FromArgb(220, 38, 38));
+            }
+            else if (lastPingMs == -1)
+            {
+                text = "Ping: timeout";
+                dot = Color.FromArgb(220, 38, 38);
+            }
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush b = new SolidBrush(dot)) g.FillEllipse(b, 8, (lblPing.Height - 7) / 2, 7, 7);
+            g.SmoothingMode = SmoothingMode.None;
+            TextRenderer.DrawText(g, text, uiFont, new Rectangle(18, 0, lblPing.Width - 22, lblPing.Height),
+                Theme.Ink, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.SingleLine);
+        }
+
+        void CheckPingAsync(bool force)
+        {
+            if (pingBusy || (!force && !Visible)) return;
+            pingBusy = true;
+            lastPingAt = DateTime.UtcNow;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                long ms = -1;
+                try
+                {
+                    using (Ping p = new Ping())
+                    {
+                        PingReply r = p.Send("1.1.1.1", 1500);
+                        if (r != null && r.Status == IPStatus.Success) ms = r.RoundtripTime;
+                    }
+                }
+                catch { ms = -1; }
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            lastPingMs = ms;
+                            pingBusy = false;
+                            if (lblPing != null) lblPing.Invalidate();
+                        });
+                    else pingBusy = false;
+                }
+                catch { pingBusy = false; }
+            });
+        }
+
+        void ToggleSpeedTest()
+        {
+            if (speedTester.State.Running)
+            {
+                speedTester.Cancel();
+                btnSpeedTest.Text = "Speedtest";
+                return;
+            }
+            btnSpeedTest.Text = "Stop test";
+            speedTester.Start(delegate(SpeedTestState st)
+            {
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke((MethodInvoker)delegate { UpdateSpeedTestUi(st); });
+                }
+                catch { }
+            });
+        }
+
+        void UpdateSpeedTestUi(SpeedTestState st)
+        {
+            if (IsDisposed) return;
+            SpeedUnit u = app.S.Unit;
+            switch (st.Phase)
+            {
+                case SpeedTestPhase.Ping:
+                    lblSpeedResult.Text = "Testing ping...";
+                    lblSpeedResult.ForeColor = Theme.Muted;
+                    break;
+                case SpeedTestPhase.Download:
+                    lblSpeedResult.Text = "↓ " + Fmt.Speed(st.DownloadBps, u) + " (" + st.ProgressPct + "%)";
+                    lblSpeedResult.ForeColor = Theme.Ink;
+                    break;
+                case SpeedTestPhase.Upload:
+                    lblSpeedResult.Text = "↓ " + Fmt.Speed(st.DownloadBps, u) + "  ↑ " + Fmt.Speed(st.UploadBps, u) + " (" + st.ProgressPct + "%)";
+                    lblSpeedResult.ForeColor = Theme.Ink;
+                    break;
+                case SpeedTestPhase.Done:
+                    btnSpeedTest.Text = "Speedtest";
+                    lblSpeedResult.Text = "↓ " + Fmt.Speed(st.DownloadBps, u) + "  ↑ " + Fmt.Speed(st.UploadBps, u) +
+                        (st.PingMs >= 0 ? "  · " + st.PingMs.ToString("0") + " ms" : "");
+                    lblSpeedResult.ForeColor = Theme.IsDark ? Color.FromArgb(52, 211, 153) : Color.FromArgb(16, 124, 16);
+                    break;
+                case SpeedTestPhase.Cancelled:
+                    btnSpeedTest.Text = "Speedtest";
+                    lblSpeedResult.Text = "Speedtest cancelled";
+                    lblSpeedResult.ForeColor = Theme.Muted;
+                    break;
+                case SpeedTestPhase.Error:
+                    btnSpeedTest.Text = "Speedtest";
+                    lblSpeedResult.Text = "Test failed: " + st.Error;
+                    lblSpeedResult.ForeColor = Color.FromArgb(220, 38, 38);
+                    break;
+            }
+        }
+
         public void SettingsChanged()
         {
             if (loadingSettings || savingUi) return;
+            ApplyTheme();
             LoadSettingsIntoUi();
             RefreshAccents();
             lastAdapterRefresh = DateTime.MinValue;
@@ -1394,12 +2190,13 @@ namespace NetSpeedBoss
                 case 1: TickApps(); break;
                 case 2: TickUsage(); break;
                 case 3: TickSystem(); break;
+                case 4: TickGamingHud(); break;
             }
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { icons.Dispose(); uiFont.Dispose(); }
+            if (disposing) { speedTester.Cancel(); icons.Dispose(); uiFont.Dispose(); navFont.Dispose(); tip.Dispose(); }
             base.Dispose(disposing);
         }
     }

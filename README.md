@@ -18,7 +18,12 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/dashboard-live.png" width="760" alt="NetSpeed Boss dashboard with live speed graph">
+  <img src="docs/images/dashboard-live.png" width="760" alt="NetSpeed Boss dashboard with live speed graph, Speedtest, and multi-WAN adapters">
+</p>
+<p align="center">
+  <img src="docs/images/gaming-hud.png" width="375" alt="NetSpeed Boss Gaming HUD tab with RAG status colors and transparent background preview">
+  &nbsp;
+  <img src="docs/images/system-info.png" width="375" alt="NetSpeed Boss System tab with CPU, GPU, Memory cards and brand logos">
 </p>
 
 ---
@@ -58,8 +63,12 @@ Works on Windows 10 and 11 (x64 &amp; ARM64). **No administrator rights needed.*
 - **Any date range.** Pick *From* and *To* (or Today / 7 days / 30 days / This month / Last month) to see the totals, daily average, busiest day and top apps for that period.
 - **Usage logs in Documents.** `Documents\NetSpeed Boss\` holds `daily-usage.csv`, `hourly-usage.csv` (with peak speeds) and `app-usage.csv`, ready to open in Excel.
 - **Monthly data cap.** Set your plan's limit and billing day, and get warned when you reach it.
+- **Dual-WAN load balancing & Speedtest.** Automatically sums multiple gateway adapters, shows live per-adapter speeds, and runs a multi-stream Speedtest.
+- **Metal-style Gaming HUD.** Transparent-background overlay that auto-shows in Windows GPU games (DX9–DX12, Vulkan, OpenGL) with configurable RAG colors for FPS, VRAM, GPU temp/fan, multi-core CPU, memory, and online server ping.
+- **System & ISP info.** Live CPU, GPU, and RAM cards alongside organized Hardware, Network & ISP, and OS details with embedded manufacturer logos.
+- **Light & Dark themes.** Automatically follows Windows theme or switches manually in one click.
 - **Floating meter.** An optional always-on-top mini meter with a background graph that snaps to screen edges and can be click-through.
-- **Private and lightweight.** A native app of about 120 KB using almost no CPU. No account, no telemetry, no ads.
+- **Private and lightweight.** Zero third-party dependencies, no account, no telemetry, no ads. Published by Quantum Step.
 
 ### Per-app speeds (optional admin mode)
 Windows only lets administrators read live per-app network traffic. Right-click the meter and choose
@@ -97,18 +106,20 @@ No SDK or Visual Studio needed. It uses the C# compiler that ships with Windows.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1                       # -> bin\NetSpeedBoss.exe
-powershell -ExecutionPolicy Bypass -File build.ps1 -Version 1.2.0 -Installer   # + dist\ installer & zip (needs Inno Setup 6)
+powershell -ExecutionPolicy Bypass -File build.ps1 -Version 1.3.1 -Installer   # + dist\ installer & zip (needs Inno Setup 6)
 ```
 
 | File | What it does |
 |---|---|
 | `src/TaskbarMeter.cs` | Taskbar read-out (per-pixel transparent window docked beside the notification area) |
 | `src/FloatingMeter.cs` | Floating always-on-top meter |
-| `src/NetMonitor.cs` | Adapter counters → speeds (64-bit counters; auto / all / specific adapter) |
+| `src/GameHud.cs`, `src/GameTelemetry.cs` | Metal-style transparent Gaming HUD overlay, RAG colors, DXGI/D3D9 FPS, NVML & GPU Engine telemetry |
+| `src/NetMonitor.cs`, `src/SpeedTester.cs` | Multi-WAN adapter counters & multi-stream HTTPS Speedtest |
 | `src/ProcessMonitor.cs` | Per-app traffic (ETW `Microsoft-Windows-Kernel-Network` + TCP connection table) |
 | `src/UsageStore.cs` | Daily usage history |
 | `src/TrayApp.cs` | Tray icon, menu, update loop |
-| `src/Dashboard.cs`, `src/Controls.cs` | Dashboard UI and charts |
+| `src/Dashboard.cs`, `src/Controls.cs`, `src/SystemControls.cs` | Dashboard UI, Dark/Light themes, charts, and embedded brand logos |
+| `tools/sync-logos.ps1` | Syncs official SVG brand logos to embedded PNGs in `assets/logos/` |
 | `installer/NetSpeedBoss.iss` | Inno Setup installer (per-user, no UAC) |
 | `winget/make-manifests.ps1` | Generates the winget manifest for a release |
 | `docs/` | The project website (GitHub Pages) |

@@ -205,13 +205,17 @@ namespace NetSpeedBoss
                     g.Clear(Color.FromArgb(1, 0, 0, 0));
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     if (hover || dragging)
-                        using (GraphicsPath p = RoundRect(new RectangleF(1, 4, b.Width - 2, b.Height - 8), 5))
-                        using (SolidBrush hb = new SolidBrush(lightTheme ? Color.FromArgb(22, 0, 0, 0) : Color.FromArgb(28, 255, 255, 255)))
+                        using (GraphicsPath p = BrandArt.Round(new RectangleF(1, 3, b.Width - 3, b.Height - 7), 6))
+                        using (SolidBrush hb = new SolidBrush(lightTheme ? Color.FromArgb(24, 0, 0, 0) : Color.FromArgb(30, 255, 255, 255)))
+                        using (Pen hp = new Pen(lightTheme ? Color.FromArgb(40, 0, 0, 0) : Color.FromArgb(48, 255, 255, 255)))
+                        {
                             g.FillPath(hb, p);
+                            g.DrawPath(hp, p);
+                        }
 
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                    float lh = font.GetHeight(g);
-                    float y0 = (b.Height - lh * 2) / 2f;
+                    float lh = Math.Min(font.GetHeight(g), (b.Height - 2) / 2f);
+                    float y0 = Math.Max(0f, (b.Height - lh * 2) / 2f);
                     using (StringFormat right = new StringFormat(StringFormatFlags.NoWrap))
                     using (SolidBrush fgB = new SolidBrush(fg), dB = new SolidBrush(down), uB = new SolidBrush(up))
                     {
@@ -244,18 +248,6 @@ namespace NetSpeedBoss
                     ReleaseDC(IntPtr.Zero, screen);
                 }
             }
-        }
-
-        static GraphicsPath RoundRect(RectangleF r, float rad)
-        {
-            GraphicsPath p = new GraphicsPath();
-            float d = rad * 2;
-            p.AddArc(r.Left, r.Top, d, d, 180, 90);
-            p.AddArc(r.Right - d, r.Top, d, d, 270, 90);
-            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-            p.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
-            p.CloseFigure();
-            return p;
         }
 
         protected override void Dispose(bool disposing)

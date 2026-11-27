@@ -13,7 +13,7 @@ namespace NetSpeedBoss
         double rx, tx;
         Font font;
         readonly ToolTip tip = new ToolTip();
-        const int Pad = 6;
+        const int Pad = 8;
 
         public FloatingMeter(TrayApp app)
         {
@@ -74,8 +74,8 @@ namespace NetSpeedBoss
             Size sample = TextRenderer.MeasureText("▼ 888.8 MB/s", font);
             if (s.Unit == SpeedUnit.Bits) sample = TextRenderer.MeasureText("▼ 888.8 Mbps", font);
             int lineH = sample.Height;
-            int w = sample.Width + Pad * 2;
-            ClientSize = s.Horizontal ? new Size(w * 2 - Pad, lineH + Pad) : new Size(w, lineH * 2 + Pad);
+            int w = sample.Width + Pad * 2 + 4;
+            ClientSize = s.Horizontal ? new Size(w * 2 + 6, lineH + Pad + 2) : new Size(w, lineH * 2 + Pad + 2);
 
             if (s.X == int.MinValue || !OnAnyScreen(new Rectangle(s.X, s.Y, Width, Height)))
             {
@@ -172,7 +172,21 @@ namespace NetSpeedBoss
             Rectangle rc = ClientRectangle;
             g.Clear(s.BackColor);
 
-            if (s.ShowGraph) DrawSparkline(g, rc);
+            Rectangle borderRect = new Rectangle(0, 0, Math.Max(2, rc.Width - 1), Math.Max(2, rc.Height - 1));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath cardPath = BrandArt.Round(borderRect, 8))
+            {
+                if (s.ShowGraph)
+                {
+                    Region prev = g.Clip;
+                    g.SetClip(cardPath);
+                    DrawSparkline(g, rc);
+                    g.Clip = prev;
+                }
+
+                using (Pen bp = new Pen(Color.FromArgb(46, s.TextColor))) g.DrawPath(bp, cardPath);
+            }
+            g.SmoothingMode = SmoothingMode.None;
 
             string down = "▼", up = "▲";
             string dv = Fmt.Speed(rx, s.Unit), uv = Fmt.Speed(tx, s.Unit);
@@ -183,8 +197,10 @@ namespace NetSpeedBoss
             if (s.Horizontal)
             {
                 int half = rc.Width / 2;
-                Rectangle a = new Rectangle(Pad, 0, half - Pad, rc.Height);
-                Rectangle b = new Rectangle(half, 0, half - Pad, rc.Height);
+                using (Pen div = new Pen(Color.FromArgb(30, s.TextColor)))
+                    g.DrawLine(div, half, 5, half, rc.Height - 6);
+                Rectangle a = new Rectangle(Pad, 0, half - Pad - 4, rc.Height);
+                Rectangle b = new Rectangle(half + 4, 0, rc.Width - half - Pad - 4, rc.Height);
                 DrawLine(g, a, down, dv, s.DownColor, arrowSz.Width, f, fr);
                 DrawLine(g, b, up, uv, s.UpColor, arrowSz.Width, f, fr);
             }

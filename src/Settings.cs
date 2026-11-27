@@ -8,6 +8,7 @@ using System.Text;
 namespace NetSpeedBoss
 {
     public enum SpeedUnit { Bytes, Bits }
+    public enum DashTheme { Auto, Light, Dark }
 
     public class Settings
     {
@@ -60,6 +61,29 @@ namespace NetSpeedBoss
         public int DashW = 900, DashH = 600;
         public bool WelcomeShown = false;
         public bool AutoCheckUpdates = true;
+        public DashTheme ThemeMode = DashTheme.Auto;
+        // ----- game status HUD -----
+        public bool GameHudAuto = true;
+        public bool GameHudPinned = false;
+        public int GameHudCorner = 0;
+        public int GameHudOpacity = 88;
+        public bool GameHudClickThrough = false;
+        public int GameHudX = int.MinValue, GameHudY = int.MinValue;
+        public bool GameHudRag = true;
+        public int GameHudFpsGreen = 60, GameHudFpsAmber = 30;
+        public int GameHudTempGreen = 72, GameHudTempAmber = 84;
+        public int GameHudPingGreen = 50, GameHudPingAmber = 100;
+        public int GameHudLoadAmber = 80, GameHudLoadRed = 92;
+        public bool GameHudShowFps = true, GameHudShowGpu = true, GameHudShowCpu = true;
+        public bool GameHudShowMem = true, GameHudShowNet = true, GameHudShowGraph = true;
+        public Color GameHudBackColor = Color.FromArgb(14, 16, 20);
+        public Color GameHudBorderColor = Color.FromArgb(62, 70, 84);
+        public Color GameHudTextColor = Color.FromArgb(240, 244, 248);
+        public Color GameHudFpsColor = Color.FromArgb(56, 189, 248);
+        public Color GameHudGpuColor = Color.FromArgb(74, 222, 128);
+        public Color GameHudCpuColor = Color.FromArgb(96, 165, 250);
+        public Color GameHudMemColor = Color.FromArgb(192, 132, 252);
+        public Color GameHudNetColor = Color.FromArgb(251, 191, 36);
 
         public static Settings Load()
         {

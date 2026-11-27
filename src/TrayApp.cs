@@ -19,6 +19,7 @@ namespace NetSpeedBoss
         public readonly SystemMonitor Sys = new SystemMonitor();
         public readonly NetMonitor Net = new NetMonitor();
         public readonly ProcessMonitor Procs = new ProcessMonitor();
+        public readonly GameTelemetry Game = new GameTelemetry();
         public ContextMenuStrip Menu;
         public readonly bool IsAdmin;
 
@@ -33,6 +34,7 @@ namespace NetSpeedBoss
         readonly Control invoker = new Control();
         FloatingMeter meter;
         TaskbarMeter taskbarMeter;
+        GameHud gameHud;
         Dashboard dash;
         DateTime lastSave = DateTime.UtcNow;
         int iconState = -1;
@@ -45,6 +47,7 @@ namespace NetSpeedBoss
         public TrayApp(string[] args)
         {
             S = Settings.Load();
+            Theme.Apply(S.ThemeMode);
             Usage.Load();
             IsAdmin = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
             invoker.CreateControl();
@@ -56,6 +59,8 @@ namespace NetSpeedBoss
             if (S.ShowMeter) meter.Show();
             taskbarMeter = new TaskbarMeter(this);
             if (S.ShowOnTaskbar) taskbarMeter.Show();
+            gameHud = new GameHud(this);
+            if (S.GameHudPinned) gameHud.Show();
 
             tray.Text = AppName;
             tray.ContextMenuStrip = Menu;
@@ -240,6 +245,24 @@ namespace NetSpeedBoss
             }
             if (S.ShowOnTaskbar) taskbarMeter.Tick(CurRx, CurTx, fs);
 
+            // game status HUD (auto-detected during games or pinned)
+            if (S.GameHudAuto || S.GameHudPinned)
+            {
+                Game.Sample(this, S.GameHudPinned);
+                bool wantHud = S.GameHudPinned || (S.GameHudAuto && Game.GameActive);
+                if (wantHud)
+                {
+                    if (!gameHud.Visible) { gameHud.ApplySettings(); gameHud.Show(); }
+                    gameHud.RefreshOverlay();
+                }
+                else if (gameHud.Visible) gameHud.Hide();
+            }
+            else
+            {
+                Game.EnsureFpsEtw(false);
+                if (gameHud.Visible) gameHud.Hide();
+            }
+
             // tray
             string tt = "↓ " + Fmt.Speed(CurRx, S.Unit) + "\n↑ " + Fmt.Speed(CurTx, S.Unit);
             long[] today = Usage.Day(DateTime.Today);
@@ -316,7 +339,9 @@ namespace NetSpeedBoss
         void BuildMenu()
         {
             Menu = new ContextMenuStrip();
-            Menu.Opening += delegate { RebuildMenu(); };
+            Menu.Renderer = ModernMenuRenderer.Instance;
+            Menu.ShowImageMargin = true;
+            Menu.Opening += delegate { Theme.Apply(S.ThemeMode); RebuildMenu(); };
             RebuildMenu();
         }
 
@@ -346,6 +371,8 @@ namespace NetSpeedBoss
             Menu.Items.Add(new ToolStripSeparator());
             Menu.Items.Add(Item("Show speed on taskbar", S.ShowOnTaskbar, delegate { ToggleTaskbar(); }));
             Menu.Items.Add(Item("Show speed in a floating window instead", S.ShowMeter, delegate { ToggleMeter(); }));
+            Menu.Items.Add(Item("Show Game Status HUD", S.GameHudPinned, delegate { ToggleGameHud(); }));
+            Menu.Items.Add(Item("Auto-show Game HUD in games", S.GameHudAuto, delegate { S.GameHudAuto = !S.GameHudAuto; Changed(); }));
             Menu.Items.Add(Item("Bold taskbar text", S.TaskbarBold, delegate { S.TaskbarBold = !S.TaskbarBold; Changed(); }));
 
             ToolStripMenuItem units = new ToolStripMenuItem("Units");
@@ -376,11 +403,16 @@ namespace NetSpeedBoss
                 op.DropDownItems.Add(Item(p + "%", S.OpacityPct == p, delegate { S.OpacityPct = pp; Changed(); }));
             }
             look.DropDownItems.Add(op);
-            ToolStripMenuItem fsz = new ToolStripMenuItem("Text size");
+            ToolStripMenuItem fsz = new ToolStripMenuItem(S.ShowOnTaskbar ? "Taskbar text size" : "Text size");
+            float curSize = S.ShowOnTaskbar ? S.TaskbarFontSize : S.FontSize;
             foreach (float f in new float[] { 8f, 9f, 10f, 11f, 12f, 14f, 16f })
             {
                 float ff = f;
-                fsz.DropDownItems.Add(Item(f + " pt", Math.Abs(S.FontSize - f) < 0.01, delegate { S.FontSize = ff; Changed(); }));
+                fsz.DropDownItems.Add(Item(f + " pt", Math.Abs(curSize - f) < 0.01, delegate
+                {
+                    if (S.ShowOnTaskbar) S.TaskbarFontSize = ff; else S.FontSize = ff;
+                    Changed();
+                }));
             }
             look.DropDownItems.Add(fsz);
             Menu.Items.Add(look);
@@ -491,8 +523,10 @@ namespace NetSpeedBoss
         public void Changed()
         {
             S.Save();
+            Theme.Apply(S.ThemeMode);
             meter.ApplySettings();
             taskbarMeter.ApplySettings();
+            if (gameHud != null) gameHud.ApplySettings();
             iconState = -1;
             UpdateTrayIcon(CurRx > 2048, CurTx > 2048);
             if (dash != null && !dash.IsDisposed) dash.SettingsChanged();
@@ -528,6 +562,22 @@ namespace NetSpeedBoss
         }
 
         public void MeterClickThroughChanged() { meter.RecreateForClickThrough(); }
+        public void GameHudClickThroughChanged() { if (gameHud != null) gameHud.RecreateForClickThrough(); }
+
+        public void ToggleGameHud()
+        {
+            S.GameHudPinned = !S.GameHudPinned;
+            if (S.GameHudPinned)
+            {
+                Game.Sample(this, true);
+                gameHud.ApplySettings();
+                gameHud.Show();
+                gameHud.RefreshOverlay();
+            }
+            else if (!S.GameHudAuto || !Game.GameActive) gameHud.Hide();
+            S.Save();
+            if (dash != null && !dash.IsDisposed) dash.SettingsChanged();
+        }
 
         public void ShowDashboard(int tab)
         {
@@ -650,6 +700,8 @@ namespace NetSpeedBoss
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             SystemEvents.SessionEnding -= OnSessionEnding;
             Procs.Dispose();
+            Game.Dispose();
+            if (gameHud != null && !gameHud.IsDisposed) gameHud.Dispose();
             Log.Flush();
             Usage.Save();
             S.Save();
