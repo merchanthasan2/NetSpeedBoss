@@ -106,4 +106,4 @@ jobs:
         shell: pwsh
         run: |
           msstore reconfigure --tenantId "$env:MSSTORE_TENANT_ID" --sellerId "$env:MSSTORE_SELLER_ID" --clientId "$env:MSSTORE_CLIENT_ID" --clientSecret "$env:MSSTORE_CLIENT_SECRET"
-          msstore publish -i "dist/msix" -id "9NP6V92XWLSH"
+          msstore publish "dist/msix/NetSpeedBoss-${{ steps.v.outputs.version }}.msixbundle" -id "9NP6V92XWLSH"
