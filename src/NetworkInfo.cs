@@ -148,11 +148,12 @@ namespace NetSpeedBoss
             return r;
         }
 
-        static bool HttpGet(string url, out string body, out string err)
+        public static bool HttpGet(string url, out string body, out string err)
         {
             body = ""; err = "";
             try
             {
+                try { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; } catch { }
                 HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
                 req.Timeout = 6000;
                 req.ReadWriteTimeout = 6000;
@@ -167,7 +168,7 @@ namespace NetSpeedBoss
             catch (Exception ex) { err = ex.Message; return false; }
         }
 
-        static string JsonStr(string json, string key)
+        public static string JsonStr(string json, string key)
         {
             Match m = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
             if (!m.Success) return "";

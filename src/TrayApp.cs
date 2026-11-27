@@ -39,6 +39,8 @@ namespace NetSpeedBoss
         Icon currentIcon;
         bool hiddenForFullscreen;
         EventWaitHandle showSignal;
+        public UpdateInfo LatestUpdate;
+        bool updateChecking, updateInstalling, balloonIsUpdate;
 
         public TrayApp(string[] args)
         {
@@ -58,6 +60,7 @@ namespace NetSpeedBoss
             tray.Text = AppName;
             tray.ContextMenuStrip = Menu;
             tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowDashboard(0); };
+            tray.BalloonTipClicked += delegate { if (balloonIsUpdate) { balloonIsUpdate = false; PromptAndInstallUpdate(); } };
             UpdateTrayIcon(false, false);
             tray.Visible = true;
 
@@ -72,9 +75,17 @@ namespace NetSpeedBoss
             if (!S.WelcomeShown)
             {
                 S.WelcomeShown = true; S.Save();
+                balloonIsUpdate = false;
                 tray.ShowBalloonTip(12000, "NetSpeed Boss is running",
                     "Your live speed is now on the taskbar next to the clock. Drag it to move it, double-click for the dashboard, right-click for options.",
                     ToolTipIcon.Info);
+            }
+            if (S.AutoCheckUpdates && !Updater.IsStoreApp())
+            {
+                System.Windows.Forms.Timer ut = new System.Windows.Forms.Timer();
+                ut.Interval = 4000;
+                ut.Tick += delegate { ut.Stop(); ut.Dispose(); CheckForUpdatesAsync(false, null); };
+                ut.Start();
             }
             Application.ApplicationExit += delegate { Shutdown(); };
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
@@ -320,6 +331,13 @@ namespace NetSpeedBoss
         void RebuildMenu()
         {
             Menu.Items.Clear();
+            if (LatestUpdate != null && LatestUpdate.UpdateAvailable)
+            {
+                ToolStripMenuItem upItem = Item("Update available: v" + LatestUpdate.Version + " (Download & install)...", false, delegate { PromptAndInstallUpdate(); });
+                upItem.Font = new Font(upItem.Font, FontStyle.Bold);
+                Menu.Items.Add(upItem);
+                Menu.Items.Add(new ToolStripSeparator());
+            }
             ToolStripMenuItem dashItem = Item("Open dashboard", false, delegate { ShowDashboard(0); });
             dashItem.Font = new Font(dashItem.Font, FontStyle.Bold);
             Menu.Items.Add(dashItem);
@@ -384,8 +402,90 @@ namespace NetSpeedBoss
             Menu.Items.Add(new ToolStripSeparator());
             Menu.Items.Add(Item("Start with Windows", StartupEnabled, delegate { StartupEnabled = !StartupEnabled; }));
             if (!IsAdmin) Menu.Items.Add(Item("Restart as administrator (per-app speeds)", false, delegate { RestartElevated(); }));
+            if (!Updater.IsStoreApp()) Menu.Items.Add(Item("Check for updates...", false, delegate { CheckForUpdatesAsync(true, null); }));
             Menu.Items.Add(new ToolStripSeparator());
             Menu.Items.Add(Item("Exit", false, delegate { ExitThread(); }));
+        }
+
+        public void CheckForUpdatesAsync(bool manual, Action<UpdateInfo> onDone)
+        {
+            if (Updater.IsStoreApp() || updateChecking) return;
+            updateChecking = true;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                UpdateInfo info = Updater.CheckLatest();
+                try
+                {
+                    invoker.BeginInvoke((MethodInvoker)delegate
+                    {
+                        updateChecking = false;
+                        if (info.Error.Length == 0)
+                        {
+                            LatestUpdate = info;
+                            RebuildMenu();
+                            if (dash != null && !dash.IsDisposed) dash.RefreshUpdateBar();
+                        }
+                        if (onDone != null) onDone(info);
+                        if (info.UpdateAvailable)
+                        {
+                            if (manual) PromptAndInstallUpdate();
+                            else if (dash == null || dash.IsDisposed || !dash.Visible)
+                            {
+                                balloonIsUpdate = true;
+                                tray.ShowBalloonTip(12000, AppName + " v" + info.Version + " is available",
+                                    "Click here to download, install, and restart automatically.", ToolTipIcon.Info);
+                            }
+                        }
+                        else if (manual && onDone == null)
+                        {
+                            MessageBox.Show(info.Error.Length > 0
+                                ? "Could not check for updates: " + info.Error
+                                : AppName + " v" + info.CurrentVersion + " is up to date.",
+                                AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                    });
+                }
+                catch { updateChecking = false; }
+            });
+        }
+
+        public void PromptAndInstallUpdate()
+        {
+            if (LatestUpdate == null || !LatestUpdate.UpdateAvailable) return;
+            ShowDashboard(0);
+            DialogResult r = MessageBox.Show(
+                AppName + " v" + LatestUpdate.Version + " is available (you have v" + LatestUpdate.CurrentVersion + ").\r\n\r\n" +
+                "Download, install, and restart " + AppName + " automatically now?",
+                AppName + " Update", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (r == DialogResult.Yes && dash != null && !dash.IsDisposed)
+                dash.BeginUpdateInstall();
+        }
+
+        public void StartUpdateInstall(UpdateInfo info, Action<int> onProgress, Action<string> onError)
+        {
+            if (updateInstalling || info == null || !info.UpdateAvailable) return;
+            updateInstalling = true;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    Updater.DownloadAndInstall(info,
+                        delegate(int pct) { try { invoker.BeginInvoke((MethodInvoker)delegate { if (onProgress != null) onProgress(pct); }); } catch { } },
+                        delegate { try { invoker.BeginInvoke((MethodInvoker)delegate { ExitThread(); }); } catch { } });
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        invoker.BeginInvoke((MethodInvoker)delegate
+                        {
+                            updateInstalling = false;
+                            if (onError != null) onError(ex.Message);
+                        });
+                    }
+                    catch { updateInstalling = false; }
+                }
+            });
         }
 
         public void Changed()

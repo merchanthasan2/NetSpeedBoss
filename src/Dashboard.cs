@@ -45,11 +45,12 @@ namespace NetSpeedBoss
         // settings
         bool loadingSettings;
         CheckBox sElevated;
-        CheckBox sTaskbar, sShowMeter, sTop, sLock, sFull, sOneLine, sGraph, sStartup, sClickThrough;
+        CheckBox sTaskbar, sShowMeter, sTop, sLock, sFull, sOneLine, sGraph, sStartup, sClickThrough, sAutoUpdate;
         ComboBox sUnit, sInterval, sAdapter;
         TrackBar sOpacity;
         NumericUpDown sFont, sLimit, sStartDay;
-        Button bDown, bUp, bBack, bText, bTbText;
+        Button bDown, bUp, bBack, bText, bTbText, btnCheckUpdates;
+        Label lblUpdateStatus;
         ComboBox tFont;
         NumericUpDown tSize;
         CheckBox tBold, tAuto;
@@ -78,6 +79,7 @@ namespace NetSpeedBoss
             tabs.SelectedIndexChanged += delegate { lastUsageRefresh = DateTime.MinValue; OnTick(); };
             Controls.Add(tabs);
             Controls.Add(BuildModeBar());
+            Controls.Add(BuildUpdateBar());
 
             FormClosing += delegate
             {
@@ -85,6 +87,7 @@ namespace NetSpeedBoss
                 app.S.Save();
             };
             LoadSettingsIntoUi();
+            RefreshUpdateBar();
             OnTick();
         }
 
@@ -92,6 +95,109 @@ namespace NetSpeedBoss
         {
             if (publicIp == null || !publicIp.Ok || (DateTime.Now - publicIp.CheckedAt).TotalSeconds >= 60)
                 RequestPublicIp();
+            if (app.S.AutoCheckUpdates && !Updater.IsStoreApp() && app.LatestUpdate == null)
+                app.CheckForUpdatesAsync(false, null);
+        }
+
+        Panel updateBar;
+        Label updateMsg;
+        Button btnUpdateNow, btnUpdateClose;
+        LinkLabel lnkUpdateNotes;
+        bool updateDismissed, updateBusy;
+
+        Panel BuildUpdateBar()
+        {
+            Color bg = Color.FromArgb(239, 246, 255);
+            Color accent = Color.FromArgb(37, 99, 235);
+            Color fg = Color.FromArgb(30, 58, 138);
+
+            updateBar = new Panel(); updateBar.Dock = DockStyle.Top; updateBar.Height = 38; updateBar.BackColor = bg;
+            updateBar.Padding = new Padding(10, 4, 10, 4); updateBar.Visible = false;
+            updateBar.Paint += delegate(object s, PaintEventArgs e)
+            {
+                using (SolidBrush b = new SolidBrush(accent)) e.Graphics.FillRectangle(b, 0, 0, 4, updateBar.Height);
+                using (Pen p = new Pen(Theme.Border)) e.Graphics.DrawLine(p, 0, updateBar.Height - 1, updateBar.Width, updateBar.Height - 1);
+            };
+
+            FlowLayoutPanel right = new FlowLayoutPanel(); right.Dock = DockStyle.Right; right.AutoSize = true; right.WrapContents = false;
+            right.FlowDirection = FlowDirection.LeftToRight; right.BackColor = bg; right.Padding = new Padding(0, 1, 0, 0);
+
+            lnkUpdateNotes = new LinkLabel(); lnkUpdateNotes.Text = "Release notes"; lnkUpdateNotes.AutoSize = true;
+            lnkUpdateNotes.LinkColor = accent; lnkUpdateNotes.ActiveLinkColor = fg; lnkUpdateNotes.BackColor = bg;
+            lnkUpdateNotes.Margin = new Padding(0, 6, 10, 0);
+            lnkUpdateNotes.LinkClicked += delegate
+            {
+                if (app.LatestUpdate != null && app.LatestUpdate.ReleaseUrl.Length > 0)
+                    try { Process.Start(app.LatestUpdate.ReleaseUrl); } catch { }
+            };
+
+            btnUpdateNow = new Button(); btnUpdateNow.Text = "Download & Update Now"; btnUpdateNow.AutoSize = true;
+            btnUpdateNow.FlatStyle = FlatStyle.Flat; btnUpdateNow.FlatAppearance.BorderSize = 0;
+            btnUpdateNow.BackColor = accent; btnUpdateNow.ForeColor = Color.White;
+            btnUpdateNow.Font = new Font("Segoe UI Semibold", 8.5f); btnUpdateNow.Cursor = Cursors.Hand;
+            btnUpdateNow.Padding = new Padding(10, 2, 10, 2); btnUpdateNow.Margin = new Padding(0, 1, 4, 0);
+            btnUpdateNow.Click += delegate { BeginUpdateInstall(); };
+
+            btnUpdateClose = new Button(); btnUpdateClose.Text = "×"; btnUpdateClose.Width = 24; btnUpdateClose.Height = 24;
+            btnUpdateClose.FlatStyle = FlatStyle.Flat; btnUpdateClose.FlatAppearance.BorderSize = 0;
+            btnUpdateClose.BackColor = bg; btnUpdateClose.ForeColor = fg; btnUpdateClose.Cursor = Cursors.Hand;
+            btnUpdateClose.Margin = new Padding(0, 1, 0, 0);
+            btnUpdateClose.Click += delegate { updateDismissed = true; updateBar.Visible = false; };
+
+            right.Controls.Add(lnkUpdateNotes); right.Controls.Add(btnUpdateNow); right.Controls.Add(btnUpdateClose);
+
+            updateMsg = new Label(); updateMsg.Dock = DockStyle.Fill; updateMsg.TextAlign = ContentAlignment.MiddleLeft;
+            updateMsg.ForeColor = fg; updateMsg.BackColor = bg; updateMsg.Padding = new Padding(4, 0, 0, 0);
+            updateMsg.Font = new Font("Segoe UI Semibold", 9f);
+
+            updateBar.Controls.Add(updateMsg); updateBar.Controls.Add(right);
+            return updateBar;
+        }
+
+        public void RefreshUpdateBar()
+        {
+            if (updateBar == null || IsDisposed) return;
+            UpdateInfo u = app.LatestUpdate;
+            bool show = !updateDismissed && u != null && u.UpdateAvailable;
+            updateBar.Visible = show;
+            if (show && !updateBusy)
+            {
+                updateMsg.Text = "Version " + u.Version + " is available (installed: " + u.CurrentVersion + ") — ready to download and install.";
+                btnUpdateNow.Text = "Download & Update Now";
+                btnUpdateNow.Enabled = true;
+                btnUpdateClose.Enabled = true;
+            }
+        }
+
+        public void BeginUpdateInstall()
+        {
+            UpdateInfo u = app.LatestUpdate;
+            if (updateBusy || u == null || !u.UpdateAvailable) return;
+            updateDismissed = false;
+            updateBusy = true;
+            updateBar.Visible = true;
+            btnUpdateNow.Enabled = false;
+            btnUpdateClose.Enabled = false;
+            btnUpdateNow.Text = "Downloading...";
+            updateMsg.Text = "Downloading NetSpeed Boss v" + u.Version + "...";
+            app.StartUpdateInstall(u,
+                delegate(int pct)
+                {
+                    if (IsDisposed) return;
+                    btnUpdateNow.Text = pct >= 100 ? "Installing & restarting..." : "Downloading " + pct + "%";
+                    updateMsg.Text = pct >= 100
+                        ? "Installing v" + u.Version + " and restarting automatically..."
+                        : "Downloading NetSpeed Boss v" + u.Version + " (" + pct + "%)...";
+                },
+                delegate(string err)
+                {
+                    if (IsDisposed) return;
+                    updateBusy = false;
+                    btnUpdateNow.Enabled = true;
+                    btnUpdateClose.Enabled = true;
+                    btnUpdateNow.Text = "Retry Update";
+                    updateMsg.Text = "Update download failed: " + err;
+                });
         }
 
         Panel BuildModeBar()
@@ -1086,6 +1192,37 @@ namespace NetSpeedBoss
             sStartDay.ValueChanged += delegate { SaveUi(); };
             row("Billing cycle starts on day", sStartDay);
 
+            header("Updates");
+            bool isStore = Updater.IsStoreApp();
+            sAutoUpdate = check("Automatically check for new versions and prompt to update");
+            sAutoUpdate.Enabled = !isStore;
+            row("", sAutoUpdate);
+            FlowLayoutPanel updRow = new FlowLayoutPanel(); updRow.AutoSize = true; updRow.WrapContents = false;
+            btnCheckUpdates = new Button(); btnCheckUpdates.Text = "Check for updates"; btnCheckUpdates.AutoSize = true;
+            btnCheckUpdates.Enabled = !isStore;
+            lblUpdateStatus = new Label(); lblUpdateStatus.AutoSize = true; lblUpdateStatus.ForeColor = Theme.Muted;
+            lblUpdateStatus.Margin = new Padding(8, 6, 0, 0);
+            lblUpdateStatus.Text = isStore ? "Managed by Microsoft Store" : "Current version: v" + Updater.CurrentVersionString();
+            btnCheckUpdates.Click += delegate
+            {
+                btnCheckUpdates.Enabled = false;
+                lblUpdateStatus.Text = "Checking GitHub releases...";
+                app.CheckForUpdatesAsync(false, delegate(UpdateInfo info)
+                {
+                    if (IsDisposed) return;
+                    btnCheckUpdates.Enabled = true;
+                    if (info.Error.Length > 0) lblUpdateStatus.Text = "Check failed: " + info.Error;
+                    else if (info.UpdateAvailable)
+                    {
+                        lblUpdateStatus.Text = "v" + info.Version + " available!";
+                        app.PromptAndInstallUpdate();
+                    }
+                    else lblUpdateStatus.Text = "Up to date (v" + info.CurrentVersion + ")";
+                });
+            };
+            updRow.Controls.Add(btnCheckUpdates); updRow.Controls.Add(lblUpdateStatus);
+            row("", updRow);
+
             header("Data & folders");
             FlowLayoutPanel sys = new FlowLayoutPanel(); sys.AutoSize = true; sys.WrapContents = false;
             Button logsBtn = new Button(); logsBtn.Text = "Open usage logs (Documents)"; logsBtn.AutoSize = true;
@@ -1178,6 +1315,7 @@ namespace NetSpeedBoss
             sStartDay.Value = s.MonthStartDay;
             sStartup.Checked = app.StartupEnabled;
             sElevated.Checked = app.ElevatedStartupEnabled;
+            sAutoUpdate.Checked = s.AutoCheckUpdates;
             foreach (Button b in new Button[] { bDown, bUp, bBack, bText, bTbText })
             {
                 Image old = b.Image;
@@ -1205,6 +1343,7 @@ namespace NetSpeedBoss
             if (sAdapter.SelectedItem != null) s.Adapter = ((KeyValuePair<string, string>)sAdapter.SelectedItem).Key;
             s.MonthlyLimitGB = (double)sLimit.Value;
             s.MonthStartDay = (int)sStartDay.Value;
+            s.AutoCheckUpdates = sAutoUpdate.Checked;
             savingUi = true;
             try
             {

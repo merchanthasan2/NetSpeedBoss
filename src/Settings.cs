@@ -59,6 +59,7 @@ namespace NetSpeedBoss
         // ----- dashboard -----
         public int DashW = 900, DashH = 600;
         public bool WelcomeShown = false;
+        public bool AutoCheckUpdates = true;
 
         public static Settings Load()
         {
