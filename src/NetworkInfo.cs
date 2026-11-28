@@ -20,6 +20,30 @@ namespace NetSpeedBoss
         public bool Ok { get { return Ip.Length > 0 && Error.Length == 0; } }
     }
 
+    public class DnsBenchRow
+    {
+        public string Name = "";
+        public string Server = "";
+        public double LatencyMs = -1;
+    }
+
+    public class WifiNeighborAp
+    {
+        public string Ssid = "";
+        public string Bssid = "";
+        public string Band = "";
+        public string Radio = "";
+        public int Channel;
+        public int SignalPct;
+    }
+
+    public class WifiChannelReport
+    {
+        public List<WifiNeighborAp> AccessPoints = new List<WifiNeighborAp>();
+        public string Recommendation = "";
+        public string Error = "";
+    }
+
     public static class NetworkInfo
     {
         public static List<SpecRow> GatherLocalRows(List<AdapterInfo> adapters, out string bestLocalIp)
@@ -98,6 +122,14 @@ namespace NetSpeedBoss
 
         static string ReadWifiSsid()
         {
+            Dictionary<string, string> map = ParseWlanInterface();
+            string v;
+            return map.TryGetValue("SSID", out v) ? v : "";
+        }
+
+        static Dictionary<string, string> ParseWlanInterface()
+        {
+            Dictionary<string, string> map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo("netsh", "wlan show interfaces");
@@ -106,12 +138,172 @@ namespace NetSpeedBoss
                 {
                     string txt = p.StandardOutput.ReadToEnd();
                     p.WaitForExit(1500);
-                    Match m = Regex.Match(txt, @"^\s*SSID\s*:\s*(.+)$", RegexOptions.Multiline);
-                    if (m.Success) return m.Groups[1].Value.Trim();
+                    string lastKey = "";
+                    foreach (string raw in txt.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        int col = raw.IndexOf(':');
+                        if (col > 0 && raw.TrimStart().IndexOf(':') > 0)
+                        {
+                            string k = raw.Substring(0, col).Trim();
+                            string v = raw.Substring(col + 1).Trim();
+                            if (k.Length > 0 && k.IndexOf("on the system", StringComparison.OrdinalIgnoreCase) < 0)
+                            {
+                                map[k] = v;
+                                lastKey = k;
+                                continue;
+                            }
+                        }
+                        if (lastKey.Length > 0 && raw.StartsWith("  "))
+                        {
+                            string extra = raw.Trim();
+                            if (extra.Length > 0) map[lastKey] = map[lastKey] + " / " + extra;
+                        }
+                    }
                 }
             }
             catch { }
-            return "";
+            return map;
+        }
+
+        public static List<SpecRow> GatherWifiRows()
+        {
+            List<SpecRow> rows = new List<SpecRow>();
+            Dictionary<string, string> w = ParseWlanInterface();
+            if (w.Count == 0)
+            {
+                rows.Add(new SpecRow("Wi-Fi", "No wireless adapter detected", null));
+                return rows;
+            }
+            Func<string, string> get = delegate(string k) { string v; return w.TryGetValue(k, out v) ? v : ""; };
+            string desc = get("Description"), name = get("Name"), state = get("State");
+            string ssid = get("SSID"), bssid = get("AP BSSID");
+            if (bssid.Length == 0) bssid = get("BSSID");
+            string radio = get("Radio type"), band = get("Band"), ch = get("Channel");
+            string rxR = get("Receive rate (Mbps)"), txR = get("Transmit rate (Mbps)");
+            string sig = get("Signal"), auth = get("Authentication"), cipher = get("Cipher");
+            string radioSt = get("Radio status");
+
+            if (desc.Length > 0 || name.Length > 0)
+                rows.Add(new SpecRow("Adapter", (name.Length > 0 ? name + " · " : "") + desc, Brands.Detect(desc)));
+            rows.Add(new SpecRow("Status", state.Length > 0 ? state : "Unknown", null));
+
+            if (string.Equals(state, "connected", StringComparison.OrdinalIgnoreCase))
+            {
+                if (ssid.Length > 0) rows.Add(new SpecRow("SSID", ssid + (bssid.Length > 0 ? "  (" + bssid + ")" : ""), null));
+                string phy = JoinNonEmpty(" · ", radio, band, ch.Length > 0 ? "Ch " + ch : "");
+                if (phy.Length > 0) rows.Add(new SpecRow("Radio / Band", phy, null));
+                if (rxR.Length > 0 || txR.Length > 0)
+                    rows.Add(new SpecRow("Link / Signal", "↓ " + (rxR.Length > 0 ? rxR : "-") + "  ↑ " + (txR.Length > 0 ? txR : "-") + " Mbps" + (sig.Length > 0 ? "  ·  " + sig : ""), null));
+                else if (sig.Length > 0)
+                    rows.Add(new SpecRow("Signal", sig, null));
+                string sec = JoinNonEmpty(" / ", auth, cipher);
+                if (sec.Length > 0) rows.Add(new SpecRow("Security", sec, null));
+            }
+            else
+            {
+                if (radioSt.Length > 0) rows.Add(new SpecRow("Radio", radioSt, null));
+                string mac = get("Physical address");
+                if (mac.Length > 0) rows.Add(new SpecRow("MAC", mac.ToUpperInvariant(), null));
+            }
+            return rows;
+        }
+
+        public static WifiChannelReport AnalyzeWifiChannels()
+        {
+            WifiChannelReport rep = new WifiChannelReport();
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("netsh", "wlan show networks mode=bssid");
+                psi.CreateNoWindow = true; psi.UseShellExecute = false; psi.RedirectStandardOutput = true;
+                string txt;
+                using (Process p = Process.Start(psi))
+                {
+                    txt = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(3000);
+                }
+                string curSsid = "";
+                WifiNeighborAp cur = null;
+                foreach (string raw in txt.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    string line = raw.Trim();
+                    if (line.StartsWith("SSID ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int c = line.IndexOf(':');
+                        curSsid = c > 0 ? line.Substring(c + 1).Trim() : "(Hidden SSID)";
+                        if (curSsid.Length == 0) curSsid = "(Hidden SSID)";
+                    }
+                    else if (line.StartsWith("BSSID ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (cur != null) rep.AccessPoints.Add(cur);
+                        cur = new WifiNeighborAp();
+                        cur.Ssid = curSsid;
+                        int c = line.IndexOf(':');
+                        cur.Bssid = c > 0 ? line.Substring(c + 1).Trim().ToUpperInvariant() : "";
+                    }
+                    else if (cur != null)
+                    {
+                        int c = line.IndexOf(':');
+                        if (c <= 0) continue;
+                        string k = line.Substring(0, c).Trim();
+                        string v = line.Substring(c + 1).Trim();
+                        if (k.Equals("Signal", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int pct; if (int.TryParse(v.Replace("%", "").Trim(), out pct)) cur.SignalPct = pct;
+                        }
+                        else if (k.Equals("Channel", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int ch; if (int.TryParse(v, out ch)) cur.Channel = ch;
+                        }
+                        else if (k.Equals("Radio type", StringComparison.OrdinalIgnoreCase))
+                        {
+                            cur.Radio = v;
+                        }
+                        else if (k.Equals("Band", StringComparison.OrdinalIgnoreCase))
+                        {
+                            cur.Band = v;
+                        }
+                    }
+                }
+                if (cur != null) rep.AccessPoints.Add(cur);
+
+                foreach (WifiNeighborAp ap in rep.AccessPoints)
+                    if (ap.Band.Length == 0 && ap.Channel > 0)
+                        ap.Band = ap.Channel <= 14 ? "2.4 GHz" : "5 GHz";
+
+                if (rep.AccessPoints.Count == 0)
+                {
+                    rep.Recommendation = "No nearby Wi-Fi APs detected (ensure Wi-Fi radio is turned on).";
+                    return rep;
+                }
+
+                // Best non-overlapping 2.4 GHz channel (1, 6, 11) weighted by overlapping neighbors
+                int[] ch24 = { 1, 6, 11 };
+                int best24 = 1, best24Score = int.MaxValue;
+                foreach (int c24 in ch24)
+                {
+                    int score = 0;
+                    foreach (WifiNeighborAp ap in rep.AccessPoints)
+                        if (ap.Channel >= 1 && ap.Channel <= 14 && Math.Abs(ap.Channel - c24) <= 3)
+                            score += Math.Max(10, ap.SignalPct) * (ap.Channel == c24 ? 2 : 1);
+                    if (score < best24Score) { best24Score = score; best24 = c24; }
+                }
+
+                // Best common 5 GHz channel
+                int[] ch5 = { 36, 40, 44, 48, 149, 153, 157, 161 };
+                int best5 = 36, best5Score = int.MaxValue;
+                foreach (int c5 in ch5)
+                {
+                    int score = 0;
+                    foreach (WifiNeighborAp ap in rep.AccessPoints)
+                        if (ap.Channel == c5) score += Math.Max(10, ap.SignalPct);
+                    if (score < best5Score) { best5Score = score; best5 = c5; }
+                }
+
+                rep.Recommendation = string.Format("Detected {0} nearby BSSID(s) · Cleanest 2.4 GHz: Ch {1} · Cleanest 5 GHz: Ch {2}",
+                    rep.AccessPoints.Count, best24, best5);
+            }
+            catch (Exception ex) { rep.Error = ex.Message; }
+            return rep;
         }
 
         /// <summary>On-demand HTTPS lookup for public IP and ISP; never called automatically in the background.</summary>
@@ -191,6 +383,105 @@ namespace NetSpeedBoss
             List<string> non = new List<string>();
             foreach (string p in parts) if (!string.IsNullOrEmpty(p)) non.Add(p);
             return string.Join(sep, non.ToArray());
+        }
+
+        public static string CurrentProfileKey(List<AdapterInfo> adapters)
+        {
+            AdapterInfo primary = PickPrimary(adapters);
+            if (primary == null) return "Offline";
+            try
+            {
+                if (string.Equals(primary.Type, "Wireless80211", StringComparison.OrdinalIgnoreCase))
+                {
+                    string ssid = ReadWifiSsid();
+                    if (ssid.Length > 0) return "WiFi:" + ssid;
+                }
+            }
+            catch { }
+            return primary.Name;
+        }
+
+        public static List<DnsBenchRow> RunDnsBenchmark(List<AdapterInfo> adapters)
+        {
+            List<KeyValuePair<string, string>> targets = new List<KeyValuePair<string, string>>();
+            AdapterInfo primary = PickPrimary(adapters);
+            if (primary != null)
+            {
+                try
+                {
+                    foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+                    {
+                        if (ni.Id != primary.Id) continue;
+                        foreach (IPAddress d in ni.GetIPProperties().DnsAddresses)
+                        {
+                            if (d.AddressFamily == AddressFamily.InterNetwork)
+                            {
+                                targets.Add(new KeyValuePair<string, string>("Current DNS", d.ToString()));
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+                catch { }
+            }
+            targets.Add(new KeyValuePair<string, string>("Cloudflare", "1.1.1.1"));
+            targets.Add(new KeyValuePair<string, string>("Google", "8.8.8.8"));
+            targets.Add(new KeyValuePair<string, string>("Quad9", "9.9.9.9"));
+            targets.Add(new KeyValuePair<string, string>("OpenDNS", "208.67.222.222"));
+
+            List<DnsBenchRow> rows = new List<DnsBenchRow>();
+            foreach (KeyValuePair<string, string> kv in targets)
+            {
+                DnsBenchRow row = new DnsBenchRow();
+                row.Name = kv.Key;
+                row.Server = kv.Value;
+                row.LatencyMs = ProbeDns(kv.Value);
+                rows.Add(row);
+            }
+            rows.Sort(delegate(DnsBenchRow a, DnsBenchRow b)
+            {
+                if (a.LatencyMs < 0 && b.LatencyMs < 0) return 0;
+                if (a.LatencyMs < 0) return 1;
+                if (b.LatencyMs < 0) return -1;
+                return a.LatencyMs.CompareTo(b.LatencyMs);
+            });
+            return rows;
+        }
+
+        static double ProbeDns(string ip)
+        {
+            byte[] query = {
+                0x13, 0x37, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x07, (byte)'e', (byte)'x', (byte)'a', (byte)'m', (byte)'p', (byte)'l', (byte)'e',
+                0x03, (byte)'c', (byte)'o', (byte)'m', 0x00,
+                0x00, 0x01, 0x00, 0x01
+            };
+            double best = -1;
+            for (int i = 0; i < 2; i++)
+            {
+                try
+                {
+                    using (UdpClient udp = new UdpClient())
+                    {
+                        udp.Client.SendTimeout = 1000;
+                        udp.Client.ReceiveTimeout = 1000;
+                        IPEndPoint ep = new IPEndPoint(IPAddress.Parse(ip), 53);
+                        Stopwatch sw = Stopwatch.StartNew();
+                        udp.Send(query, query.Length, ep);
+                        IPEndPoint remote = null;
+                        byte[] resp = udp.Receive(ref remote);
+                        sw.Stop();
+                        if (resp != null && resp.Length >= 12)
+                        {
+                            double ms = sw.Elapsed.TotalMilliseconds;
+                            if (best < 0 || ms < best) best = ms;
+                        }
+                    }
+                }
+                catch { }
+            }
+            return best;
         }
     }
 }

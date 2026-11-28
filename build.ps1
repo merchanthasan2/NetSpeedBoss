@@ -30,7 +30,7 @@ using System.Reflection;
 "@ | Set-Content (Join-Path $obj 'AssemblyInfo.cs') -Encoding utf8
 
 $files = @(Get-ChildItem $src -Filter *.cs | ForEach-Object { $_.FullName }) + (Join-Path $obj 'AssemblyInfo.cs')
-$resArgs = @()
+$resArgs = @("/resource:$ico,NetSpeedBoss.app.ico")
 $logoDir = Join-Path $root 'assets\logos'
 if (-not (Test-Path $logoDir)) {
     $sync = Join-Path $root 'tools\sync-logos.ps1'
@@ -42,9 +42,11 @@ if (Test-Path $logoDir) {
     }
 }
 $exe = Join-Path $out 'NetSpeedBoss.exe'
+$wpf = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\WPF"
 & $csc /nologo /target:winexe /platform:anycpu /optimize+ /out:"$exe" `
     /win32icon:"$ico" /win32manifest:"$(Join-Path $src 'app.manifest')" `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Management.dll `
+    /r:"$wpf\UIAutomationClient.dll" /r:"$wpf\UIAutomationTypes.dll" /r:"$wpf\WindowsBase.dll" `
     $resArgs $files
 if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 Write-Host "Built $exe ($Version)"
@@ -62,5 +64,12 @@ if ($Installer) {
     $zip = Join-Path $dist "NetSpeedBoss-$Version-portable.zip"
     if (Test-Path $zip) { Remove-Item $zip }
     Compress-Archive -Path $exe, (Join-Path $root 'README.md'), (Join-Path $root 'LICENSE') -DestinationPath $zip
-    Get-ChildItem $dist | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash, $_.Name }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        Get-ChildItem $dist -File | ForEach-Object {
+            $fs = [System.IO.File]::OpenRead($_.FullName)
+            try { $h = ([BitConverter]::ToString($sha.ComputeHash($fs))).Replace('-', '') } finally { $fs.Dispose() }
+            "{0}  {1}" -f $h, $_.Name
+        }
+    } finally { $sha.Dispose() }
 }

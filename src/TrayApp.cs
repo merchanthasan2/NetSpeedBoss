@@ -20,18 +20,48 @@ namespace NetSpeedBoss
         public readonly NetMonitor Net = new NetMonitor();
         public readonly ProcessMonitor Procs = new ProcessMonitor();
         public readonly GameTelemetry Game = new GameTelemetry();
+        public readonly OutageTracker Outages = new OutageTracker();
+        public readonly LagDoctor LagDoc = new LagDoctor();
         public ContextMenuStrip Menu;
         public readonly bool IsAdmin;
 
         // speed history, ring buffer (bytes/sec)
         public readonly double[] HistRx = new double[600], HistTx = new double[600];
+        public readonly bool[] HistSpike = new bool[600];
         int histPos;
         public double CurRx, CurTx, PeakRx, PeakTx, SessionRx, SessionTx;
         public readonly DateTime SessionStart = DateTime.Now;
 
+        readonly Queue<long> pingWindow = new Queue<long>();
+        public long LastPingMs = -2;
+        public double PingLossPct, PingJitterMs;
+        int prevWanCount = -1;
+        DateTime lastWanAlertUtc = DateTime.MinValue;
+        public string CurrentNetProfile = "Default";
+        DateTime lastProfileCheckUtc = DateTime.MinValue;
+        bool profileCheckBusy;
+        string warnedProfileCapKey = "";
+        int hogStreak;
+        string hogLastApp = "";
+        DateTime lastHogAlertUtc = DateTime.MinValue;
+        readonly HashSet<string> alertedUnknownMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        DateTime lastLanWatchUtc = DateTime.MinValue;
+        readonly LanScanner watchScanner = new LanScanner();
+        DateTime lastNewAppToastUtc = DateTime.MinValue;
+
+        class InvokerHost : Control
+        {
+            public Action<int> HotkeyPressed;
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == Native.WM_HOTKEY && HotkeyPressed != null) HotkeyPressed((int)m.WParam);
+                base.WndProc(ref m);
+            }
+        }
+
         readonly NotifyIcon tray = new NotifyIcon();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
-        readonly Control invoker = new Control();
+        readonly InvokerHost invoker = new InvokerHost();
         FloatingMeter meter;
         TaskbarMeter taskbarMeter;
         GameHud gameHud;
@@ -51,7 +81,9 @@ namespace NetSpeedBoss
             Usage.Load();
             IsAdmin = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
             invoker.CreateControl();
+            invoker.HotkeyPressed = OnGlobalHotkey;
             IntPtr forceHandle = invoker.Handle;
+            ApplyHotkeys();
 
             BuildMenu();
             if (S.ShowMeter && S.ShowOnTaskbar) { S.ShowMeter = false; S.Save(); }   // only one speed display at a time
@@ -159,6 +191,17 @@ namespace NetSpeedBoss
                 double[] h;
                 if (!AppHistRx.TryGetValue(a.Name, out h)) { h = new double[HistRx.Length]; AppHistRx[a.Name] = h; }
                 h[pos] = a.Rx;
+                if (S.AlertNewNetworkApps && (a.Rx + a.Tx > 0 || a.TotIn > 0))
+                {
+                    bool seeded;
+                    if (GuardStore.RecordAppAndCheckNew(a.Name, out seeded) && (DateTime.UtcNow - lastNewAppToastUtc).TotalSeconds >= 10)
+                    {
+                        lastNewAppToastUtc = DateTime.UtcNow;
+                        balloonIsUpdate = false;
+                        tray.ShowBalloonTip(7000, "New app connected",
+                            a.Name + " connected to the network for the first time.", ToolTipIcon.Info);
+                    }
+                }
             }
             foreach (KeyValuePair<string, double[]> kv in AppHistRx) if (!by.ContainsKey(kv.Key)) kv.Value[pos] = 0;
 
@@ -217,6 +260,41 @@ namespace NetSpeedBoss
             return arr[((histPos - 1 - ago) % n + n) % n];
         }
 
+        public bool HistFlag(int ago)
+        {
+            int n = HistSpike.Length;
+            return HistSpike[((histPos - 1 - ago) % n + n) % n];
+        }
+
+        public void RecordPingSample(long ms)
+        {
+            LastPingMs = ms;
+            pingWindow.Enqueue(ms);
+            while (pingWindow.Count > 20) pingWindow.Dequeue();
+            int total = 0, lost = 0;
+            List<long> ok = new List<long>();
+            foreach (long v in pingWindow)
+            {
+                total++;
+                if (v < 0) lost++;
+                else ok.Add(v);
+            }
+            PingLossPct = total > 0 ? (100.0 * lost / total) : 0;
+            double jitSum = 0;
+            for (int i = 1; i < ok.Count; i++) jitSum += Math.Abs(ok[i] - ok[i - 1]);
+            PingJitterMs = ok.Count >= 2 ? jitSum / (ok.Count - 1) : 0;
+
+            bool spike = ms < 0;
+            if (!spike && ok.Count >= 4)
+            {
+                ok.Sort();
+                long med = ok[ok.Count / 2];
+                if (ms > Math.Max(med * 2.2 + 30, 120)) spike = true;
+            }
+            int curSlot = ((histPos - 1) % HistSpike.Length + HistSpike.Length) % HistSpike.Length;
+            if (spike) HistSpike[curSlot] = true;
+        }
+
         void Tick()
         {
             Net.Sample(S.Adapter);
@@ -229,11 +307,19 @@ namespace NetSpeedBoss
             if (Procs.EtwActive || dashOpen) Procs.Sample();
 
             HistRx[histPos] = CurRx; HistTx[histPos] = CurTx;
+            HistSpike[histPos] = false;
             RecordApps(histPos);
             histPos = (histPos + 1) % HistRx.Length;
             Usage.Add(Net.RxDelta, Net.TxDelta);
+            Usage.AddProfileUsage(CurrentNetProfile, Net.RxDelta, Net.TxDelta);
+            RefreshNetProfileAsync();
             Log.Add(Net.RxDelta, Net.TxDelta, CurRx, CurTx);
             Sys.Sample();   // CPU + memory history (cheap); GPU is sampled by the System tab
+
+            CheckWanTransition();
+            CheckHogAlert();
+            Outages.TickProbe(Net.ActiveWanCount, S.TrackOutages);
+            CheckLanWatchdog();
 
             // floating meter + fullscreen auto-hide
             bool fs = S.HideOnFullscreen && IsFullscreenAppRunning();
@@ -285,20 +371,132 @@ namespace NetSpeedBoss
             return st == 2 || st == 3 || st == 4; // BUSY, D3D full screen, presentation mode
         }
 
+        void CheckWanTransition()
+        {
+            if (!S.AlertOnWanDrop) { prevWanCount = Net.ActiveWanCount; return; }
+            if (prevWanCount < 0) { prevWanCount = Net.ActiveWanCount; return; }
+            if (Net.ActiveWanCount != prevWanCount && (DateTime.UtcNow - lastWanAlertUtc).TotalSeconds >= 15)
+            {
+                if (prevWanCount >= 2 && Net.ActiveWanCount < prevWanCount)
+                {
+                    lastWanAlertUtc = DateTime.UtcNow;
+                    balloonIsUpdate = false;
+                    tray.ShowBalloonTip(7000, "Multi-WAN link change",
+                        "Active internet links dropped from " + prevWanCount + " to " + Net.ActiveWanCount + ".", ToolTipIcon.Warning);
+                }
+                else if (prevWanCount <= 1 && Net.ActiveWanCount >= 2)
+                {
+                    lastWanAlertUtc = DateTime.UtcNow;
+                    balloonIsUpdate = false;
+                    tray.ShowBalloonTip(6000, "Multi-WAN restored",
+                        Net.ActiveWanCount + " active WAN links are now load balancing.", ToolTipIcon.Info);
+                }
+            }
+            prevWanCount = Net.ActiveWanCount;
+        }
+
+        void RefreshNetProfileAsync()
+        {
+            if (profileCheckBusy || (DateTime.UtcNow - lastProfileCheckUtc).TotalSeconds < 12) return;
+            profileCheckBusy = true;
+            lastProfileCheckUtc = DateTime.UtcNow;
+            List<AdapterInfo> snap = Net.Adapters;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string prof = NetworkInfo.CurrentProfileKey(snap);
+                CurrentNetProfile = string.IsNullOrEmpty(prof) ? "Default" : prof;
+                profileCheckBusy = false;
+            });
+        }
+
+        void CheckLanWatchdog()
+        {
+            if (!S.WatchNewLanDevices || watchScanner.Running || Net.ActiveWanCount <= 0) return;
+            if (!GuardStore.HasAnyTrustedDevices()) return;
+            if ((DateTime.UtcNow - lastLanWatchUtc).TotalSeconds < 75) return;
+            lastLanWatchUtc = DateTime.UtcNow;
+            string range = LanScanner.DefaultRange(Net.Adapters);
+            watchScanner.Start(range, false, false,
+                delegate(LanHostResult host, int d, int t)
+                {
+                    if (host == null || string.IsNullOrEmpty(host.Mac)) return;
+                    if (GuardStore.GetTrustedLabel(host.Mac) != null) return;
+                    if (!alertedUnknownMacs.Add(host.Mac)) return;
+                    try
+                    {
+                        invoker.BeginInvoke((MethodInvoker)delegate
+                        {
+                            balloonIsUpdate = false;
+                            tray.ShowBalloonTip(9000, "New LAN / Wi-Fi device detected",
+                                host.Ip + " (" + host.Mac + ") is not in your trusted device list.", ToolTipIcon.Warning);
+                        });
+                    }
+                    catch { }
+                }, null);
+        }
+
+        void CheckHogAlert()
+        {
+            if (S.HogAlertMBps <= 0 || !Procs.EtwActive) { hogStreak = 0; return; }
+            if (S.HogAlertDuringGame && !Game.GameActive) { hogStreak = 0; return; }
+            double threshBps = S.HogAlertMBps * 1048576.0;
+            AppSeries top = null;
+            foreach (AppSeries a in AppNow)
+            {
+                if (Game.GameActive && !string.IsNullOrEmpty(Game.GameName) &&
+                    a.Name.IndexOf(Game.GameName, StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                if (a.Rx >= threshBps && (top == null || a.Rx > top.Rx)) top = a;
+            }
+            if (top != null)
+            {
+                hogStreak = string.Equals(hogLastApp, top.Name, StringComparison.OrdinalIgnoreCase) ? hogStreak + 1 : 1;
+                hogLastApp = top.Name;
+                if (hogStreak >= 4 && (DateTime.UtcNow - lastHogAlertUtc).TotalSeconds >= 90)
+                {
+                    lastHogAlertUtc = DateTime.UtcNow;
+                    hogStreak = 0;
+                    balloonIsUpdate = false;
+                    tray.ShowBalloonTip(7000, "High background download",
+                        top.Name + " is downloading at " + Fmt.Speed(top.Rx, S.Unit) + ".", ToolTipIcon.Info);
+                }
+            }
+            else hogStreak = 0;
+        }
+
         void CheckLimit()
         {
-            if (S.MonthlyLimitGB <= 0) return;
             DateTime start = UsageStore.PeriodStart(S.MonthStartDay);
-            string key = start.ToString("yyyy-MM-dd") + "@" + S.MonthlyLimitGB;
-            if (S.LimitWarnedPeriod == key) return;
-            long[] u = Usage.Range(start, DateTime.Today);
-            double used = u[0] + u[1];
-            if (used >= S.MonthlyLimitGB * 1024 * 1024 * 1024)
+            if (S.MonthlyLimitGB > 0)
             {
-                S.LimitWarnedPeriod = key;
-                S.Save();
-                tray.ShowBalloonTip(10000, "Data limit reached",
-                    "You have used " + Fmt.Size(used) + " of your " + S.MonthlyLimitGB + " GB monthly limit.", ToolTipIcon.Warning);
+                string key = start.ToString("yyyy-MM-dd") + "@" + S.MonthlyLimitGB;
+                if (S.LimitWarnedPeriod != key)
+                {
+                    long[] u = Usage.Range(start, DateTime.Today);
+                    double used = u[0] + u[1];
+                    if (used >= S.MonthlyLimitGB * 1024 * 1024 * 1024)
+                    {
+                        S.LimitWarnedPeriod = key;
+                        S.Save();
+                        tray.ShowBalloonTip(10000, "Data limit reached",
+                            "You have used " + Fmt.Size(used) + " of your " + S.MonthlyLimitGB + " GB monthly limit.", ToolTipIcon.Warning);
+                    }
+                }
+            }
+            double pCap = Usage.GetProfileCapGB(CurrentNetProfile);
+            if (pCap > 0)
+            {
+                string pkey = CurrentNetProfile + "|" + start.ToString("yyyy-MM-dd") + "@" + pCap;
+                if (warnedProfileCapKey != pkey)
+                {
+                    long[] pu = Usage.ProfileRange(CurrentNetProfile, start, DateTime.Today);
+                    double pUsed = pu[0] + pu[1];
+                    if (pUsed >= pCap * 1024 * 1024 * 1024)
+                    {
+                        warnedProfileCapKey = pkey;
+                        tray.ShowBalloonTip(10000, "Network profile limit reached",
+                            CurrentNetProfile + " used " + Fmt.Size(pUsed) + " (cap " + pCap + " GB).", ToolTipIcon.Warning);
+                    }
+                }
             }
         }
 
@@ -367,13 +565,21 @@ namespace NetSpeedBoss
             dashItem.Font = new Font(dashItem.Font, FontStyle.Bold);
             Menu.Items.Add(dashItem);
             Menu.Items.Add(Item("Apps using the network", false, delegate { ShowDashboard(1); }));
-            Menu.Items.Add(Item("Data usage", false, delegate { ShowDashboard(2); }));
+            Menu.Items.Add(Item("Network scanner & speed test", false, delegate { ShowDashboard(2); }));
+            Menu.Items.Add(Item("Data usage", false, delegate { ShowDashboard(3); }));
             Menu.Items.Add(new ToolStripSeparator());
             Menu.Items.Add(Item("Show speed on taskbar", S.ShowOnTaskbar, delegate { ToggleTaskbar(); }));
+            Menu.Items.Add(Item("Auto-position taskbar meter (near Weather bar)", S.TaskbarAutoPlace, delegate { S.TaskbarAutoPlace = !S.TaskbarAutoPlace; Changed(); }));
             Menu.Items.Add(Item("Show speed in a floating window instead", S.ShowMeter, delegate { ToggleMeter(); }));
             Menu.Items.Add(Item("Show Game Status HUD", S.GameHudPinned, delegate { ToggleGameHud(); }));
             Menu.Items.Add(Item("Auto-show Game HUD in games", S.GameHudAuto, delegate { S.GameHudAuto = !S.GameHudAuto; Changed(); }));
             Menu.Items.Add(Item("Bold taskbar text", S.TaskbarBold, delegate { S.TaskbarBold = !S.TaskbarBold; Changed(); }));
+
+            ToolStripMenuItem profMenu = new ToolStripMenuItem("Quick profile (" + S.ProfilePreset + ")");
+            profMenu.DropDownItems.Add(Item("Standard (Balanced)", S.ProfilePreset == "Standard", delegate { ApplyProfilePreset("Standard"); }));
+            profMenu.DropDownItems.Add(Item("Gaming (HUD + hog guard)", S.ProfilePreset == "Gaming", delegate { ApplyProfilePreset("Gaming"); }));
+            profMenu.DropDownItems.Add(Item("Travel / Hotspot (Strict alerts)", S.ProfilePreset == "Travel", delegate { ApplyProfilePreset("Travel"); }));
+            Menu.Items.Add(profMenu);
 
             ToolStripMenuItem units = new ToolStripMenuItem("Units");
             units.DropDownItems.Add(Item("Bytes  (KB/s, MB/s)", S.Unit == SpeedUnit.Bytes, delegate { S.Unit = SpeedUnit.Bytes; Changed(); }));
@@ -430,7 +636,7 @@ namespace NetSpeedBoss
             Menu.Items.Add(Item("Lock position", S.LockPosition, delegate { S.LockPosition = !S.LockPosition; S.Save(); }));
             Menu.Items.Add(Item("Click-through (ignore mouse)", S.ClickThrough, delegate { S.ClickThrough = !S.ClickThrough; S.Save(); meter.RecreateForClickThrough(); }));
             Menu.Items.Add(Item("Hide when a full-screen app runs", S.HideOnFullscreen, delegate { S.HideOnFullscreen = !S.HideOnFullscreen; S.Save(); }));
-            Menu.Items.Add(Item("Reset positions", false, delegate { S.X = int.MinValue; S.TaskbarOffset = 6; Changed(); }));
+            Menu.Items.Add(Item("Reset positions", false, delegate { S.X = int.MinValue; S.TaskbarAutoPlace = true; S.TaskbarOffset = 6; Changed(); }));
             Menu.Items.Add(new ToolStripSeparator());
             Menu.Items.Add(Item("Start with Windows", StartupEnabled, delegate { StartupEnabled = !StartupEnabled; }));
             if (!IsAdmin) Menu.Items.Add(Item("Restart as administrator (per-app speeds)", false, delegate { RestartElevated(); }));
@@ -524,12 +730,47 @@ namespace NetSpeedBoss
         {
             S.Save();
             Theme.Apply(S.ThemeMode);
+            ApplyHotkeys();
             meter.ApplySettings();
             taskbarMeter.ApplySettings();
             if (gameHud != null) gameHud.ApplySettings();
             iconState = -1;
             UpdateTrayIcon(CurRx > 2048, CurTx > 2048);
             if (dash != null && !dash.IsDisposed) dash.SettingsChanged();
+        }
+
+        public void ApplyHotkeys()
+        {
+            try
+            {
+                if (!invoker.IsHandleCreated) return;
+                for (int id = 1; id <= 3; id++) Native.UnregisterHotKey(invoker.Handle, id);
+                if (!S.GlobalHotkeysEnabled) return;
+                uint mods = Native.MOD_CONTROL | Native.MOD_SHIFT | Native.MOD_NOREPEAT;
+                Native.RegisterHotKey(invoker.Handle, 1, mods, 0x48); // Ctrl+Shift+H -> Gaming HUD
+                Native.RegisterHotKey(invoker.Handle, 2, mods, 0x4C); // Ctrl+Shift+L -> HUD Click-through
+                Native.RegisterHotKey(invoker.Handle, 3, mods, 0x4D); // Ctrl+Shift+M -> Floating Meter
+            }
+            catch { }
+        }
+
+        void OnGlobalHotkey(int id)
+        {
+            switch (id)
+            {
+                case 1:
+                    ToggleGameHud();
+                    break;
+                case 2:
+                    S.GameHudClickThrough = !S.GameHudClickThrough;
+                    S.Save();
+                    GameHudClickThroughChanged();
+                    if (dash != null && !dash.IsDisposed) dash.SettingsChanged();
+                    break;
+                case 3:
+                    ToggleMeter();
+                    break;
+            }
         }
 
         public void ToggleMeter()
@@ -563,6 +804,69 @@ namespace NetSpeedBoss
 
         public void MeterClickThroughChanged() { meter.RecreateForClickThrough(); }
         public void GameHudClickThroughChanged() { if (gameHud != null) gameHud.RecreateForClickThrough(); }
+
+        public void ApplyProfilePreset(string name)
+        {
+            S.ProfilePreset = name;
+            if (name == "Gaming")
+            {
+                S.GameHudAuto = true;
+                S.HogAlertMBps = 5;
+                S.HogAlertDuringGame = true;
+                S.AlertOnWanDrop = true;
+            }
+            else if (name == "Travel")
+            {
+                S.GameHudAuto = false;
+                S.HogAlertMBps = 2;
+                S.HogAlertDuringGame = false;
+                S.AlertOnWanDrop = true;
+            }
+            else
+            {
+                S.ProfilePreset = "Standard";
+                S.GameHudAuto = true;
+                S.HogAlertMBps = 0;
+                S.HogAlertDuringGame = true;
+                S.AlertOnWanDrop = true;
+            }
+            Changed();
+        }
+
+        public string BuildDiagnosticsReport()
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            sb.AppendLine("NetSpeed Boss Diagnostics Report");
+            sb.AppendLine("================================");
+            sb.AppendLine("Version:         v" + Updater.CurrentVersionString() + (Updater.IsStoreApp() ? " (Microsoft Store)" : " (Desktop)"));
+            sb.AppendLine("Elevation:       " + (IsAdmin ? "Administrator" : "Standard user"));
+            sb.AppendLine("OS:              " + Environment.OSVersion.VersionString + " (" + (Environment.Is64BitOperatingSystem ? "x64" : "x86") + ")");
+            sb.AppendLine("Quick Profile:   " + S.ProfilePreset + " | Network: " + CurrentNetProfile);
+            sb.AppendLine("Per-App ETW:     " + (Procs.EtwActive ? "Active (" + Procs.EventsSeen + " events)" : "Inactive (" + Procs.Status + ")"));
+            sb.AppendLine("DXGI/D3D9 FPS:   " + (Game.FpsEtwActive ? "Active" : "Standby/Admin required"));
+            sb.AppendLine("Ping / Jitter:   " + (LastPingMs >= 0 ? LastPingMs + " ms" : "n/a") +
+                          string.Format(" | Jitter ±{0:0.0} ms | Loss {1:0.0}%", PingJitterMs, PingLossPct));
+            sb.AppendLine("Active WANs:     " + Net.ActiveWanCount + (Net.IsMultiWan ? " (Multi-WAN load balanced)" : ""));
+            sb.AppendLine(string.Format("ISP Uptime:      {0:0.00}% today ({1} drop(s))", Outages.TodayUptimePct, Outages.TodayDropCount));
+            if (LagDoc.LastResult != null)
+                sb.AppendLine("Bufferbloat:     Grade " + LagDoc.LastResult.Grade + " (" + LagDoc.LastResult.Verdict + ")");
+            foreach (AdapterInfo a in Net.Adapters)
+                sb.AppendLine(string.Format("  - {0} [{1}] link={2} gw={3} down={4} up={5} selected={6}",
+                    a.Name, a.Description, Fmt.LinkSpeed(a.LinkSpeed), a.Gateway, Fmt.Speed(a.RxBps, S.Unit), Fmt.Speed(a.TxBps, S.Unit), a.Selected));
+            Sys.SampleGpu();
+            sb.AppendLine("GPUs (" + Sys.Gpus.Count + "):");
+            foreach (GpuInfo g in Sys.Gpus)
+                sb.AppendLine(string.Format("  - {0} (vendor=0x{1:X4} util={2:0}% vram={3}/{4} MB)",
+                    g.Name, g.VendorId, g.Util, g.DedicatedUsed / 1048576L, g.Vram / 1048576L));
+            List<SpeedTestRecord> tests = SpeedTester.LoadHistory(1);
+            if (tests.Count > 0)
+            {
+                SpeedTestRecord r = tests[0];
+                sb.AppendLine(string.Format("Last Speedtest:  {0:yyyy-MM-dd HH:mm}  ↓ {1}  ↑ {2}  Ping {3:0} ms ({4} WANs)",
+                    r.Timestamp, Fmt.Speed(r.DownloadBps, S.Unit), Fmt.Speed(r.UploadBps, S.Unit), r.PingMs, r.WanCount));
+            }
+            return sb.ToString();
+        }
 
         public void ToggleGameHud()
         {
@@ -697,6 +1001,10 @@ namespace NetSpeedBoss
             if (shutDown) return;
             shutDown = true;
             timer.Stop();
+            for (int id = 1; id <= 3; id++) try { Native.UnregisterHotKey(invoker.Handle, id); } catch { }
+            LagDoc.Cancel();
+            watchScanner.Cancel();
+            Outages.FlushOpenOutage();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             SystemEvents.SessionEnding -= OnSessionEnding;
             Procs.Dispose();

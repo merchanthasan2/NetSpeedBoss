@@ -31,10 +31,19 @@ namespace NetSpeedBoss
         public double GameGpu3d;
         public int ScreenW = 1920, ScreenH = 1080, RefreshHz = 60;
 
-        public double Fps, FpsMin, FpsMax, FrameMs;
+        public double Fps, FpsMin, FpsMax, Fps1PctLow, FrameMs;
         public readonly double[] FpsHist = new double[60];
         public readonly double[] FrameMsHist = new double[60];
         public int HistPos;
+
+        public GameSessionSummary LastSession;
+        bool sessTracking;
+        DateTime sessStartLocal = DateTime.MinValue;
+        double sessFpsSum, sessLow1Min = double.MaxValue, sessPeakGpuTemp = -1, sessPeakCpuTemp = -1;
+        int sessFpsSamples;
+        long sessNetRxBytes, sessNetTxBytes;
+        DateTime lastSessionSampleUtc = DateTime.MinValue;
+        string sessGameName = "";
 
         public double GpuUtil = -1, GpuTempC = -1, GpuFanPct = -1, GpuPowerW = -1;
         public int GpuClockMhz = -1;
@@ -111,6 +120,96 @@ namespace NetSpeedBoss
             public static void Shutdown()
             {
                 if (ok) { ok = false; try { nvmlShutdown(); } catch { } }
+            }
+        }
+
+        // ---- AMD ADL (Radeon GPU temp / fan / clock / activity, zero external DLLs) ----
+        static class AmdAdl
+        {
+            [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+            delegate IntPtr AdlAllocDelegate(int size);
+            [StructLayout(LayoutKind.Sequential)]
+            struct ADLTemperature { public int Size; public int Temperature; }
+            [StructLayout(LayoutKind.Sequential)]
+            struct ADLFanSpeedValue { public int Size; public int SpeedType; public int FanSpeed; }
+            [StructLayout(LayoutKind.Sequential)]
+            struct ADLPMActivity
+            {
+                public int Size, EngineClock, MemoryClock, Vddc, ActivityPercent;
+                public int CurrentPerformanceLevel, CurrentBusSpeed, CurrentBusLanes, MaximumBusLanes;
+                public int Reserved;
+            }
+
+            [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
+            static extern int ADL2_Main_Control_Create(AdlAllocDelegate cb, int enumConnectedAdapters, out IntPtr ctx);
+            [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
+            static extern int ADL2_Main_Control_Destroy(IntPtr ctx);
+            [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
+            static extern int ADL2_Adapter_NumberOfAdapters_Get(IntPtr ctx, out int numAdapters);
+            [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
+            static extern int ADL2_Overdrive5_Temperature_Get(IntPtr ctx, int adapterIdx, int thermalCtrlIdx, ref ADLTemperature temp);
+            [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
+            static extern int ADL2_Overdrive5_FanSpeed_Get(IntPtr ctx, int adapterIdx, int thermalCtrlIdx, ref ADLFanSpeedValue fan);
+            [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
+            static extern int ADL2_Overdrive5_CurrentActivity_Get(IntPtr ctx, int adapterIdx, ref ADLPMActivity act);
+
+            static readonly AdlAllocDelegate AllocCb = delegate(int sz) { return Marshal.AllocHGlobal(sz); };
+            static bool tried, ok;
+            static IntPtr ctx = IntPtr.Zero;
+            static int adapterIdx;
+
+            public static bool Read(ref double util, ref double tempC, ref double fanPct, ref int clockMhz)
+            {
+                if (!tried)
+                {
+                    tried = true;
+                    try
+                    {
+                        int n;
+                        if (ADL2_Main_Control_Create(AllocCb, 1, out ctx) == 0 && ctx != IntPtr.Zero &&
+                            ADL2_Adapter_NumberOfAdapters_Get(ctx, out n) == 0 && n > 0)
+                        {
+                            adapterIdx = 0;
+                            ok = true;
+                        }
+                    }
+                    catch { ok = false; }
+                }
+                if (!ok) return false;
+                bool any = false;
+                try
+                {
+                    ADLTemperature t = new ADLTemperature();
+                    t.Size = Marshal.SizeOf(typeof(ADLTemperature));
+                    if (ADL2_Overdrive5_Temperature_Get(ctx, adapterIdx, 0, ref t) == 0 && t.Temperature > 0)
+                    {
+                        tempC = t.Temperature / 1000.0;
+                        any = true;
+                    }
+                    ADLFanSpeedValue fan = new ADLFanSpeedValue();
+                    fan.Size = Marshal.SizeOf(typeof(ADLFanSpeedValue));
+                    fan.SpeedType = 1; // ADL_DL_FANCTRL_SPEED_TYPE_PERCENT
+                    if (ADL2_Overdrive5_FanSpeed_Get(ctx, adapterIdx, 0, ref fan) == 0 && fan.FanSpeed >= 0 && fan.FanSpeed <= 100)
+                    {
+                        fanPct = fan.FanSpeed;
+                        any = true;
+                    }
+                    ADLPMActivity act = new ADLPMActivity();
+                    act.Size = Marshal.SizeOf(typeof(ADLPMActivity));
+                    if (ADL2_Overdrive5_CurrentActivity_Get(ctx, adapterIdx, ref act) == 0)
+                    {
+                        if (act.ActivityPercent >= 0 && act.ActivityPercent <= 100 && util < 0) util = act.ActivityPercent;
+                        if (act.EngineClock > 0) clockMhz = act.EngineClock / 100; // 10 kHz units -> MHz
+                        any = true;
+                    }
+                }
+                catch { ok = false; }
+                return any;
+            }
+
+            public static void Shutdown()
+            {
+                if (ctx != IntPtr.Zero) { try { ADL2_Main_Control_Destroy(ctx); } catch { } ctx = IntPtr.Zero; ok = false; }
             }
         }
 
@@ -234,9 +333,9 @@ namespace NetSpeedBoss
             catch { }
         }
 
-        void ComputeFpsForPid(int pid, out double fps, out double minFps, out double maxFps, out double frameMs)
+        void ComputeFpsForPid(int pid, out double fps, out double minFps, out double maxFps, out double low1Fps, out double frameMs)
         {
-            fps = 0; minFps = 0; maxFps = 0; frameMs = 0;
+            fps = 0; minFps = 0; maxFps = 0; low1Fps = 0; frameMs = 0;
             long nowQpc = Stopwatch.GetTimestamp();
             long windowQpc = (long)(1.25 * qpcFreq);
             List<long> recent = null;
@@ -269,11 +368,13 @@ namespace NetSpeedBoss
             fps = (count - 1) / spanSec;
             frameMs = 1000.0 / Math.Max(0.1, fps);
             double lo = double.MaxValue, hi = 0;
+            List<double> deltas = new List<double>(count);
             for (int i = start + 1; i < recent.Count; i++)
             {
                 double dt = (recent[i] - recent[i - 1]) / (double)qpcFreq;
                 if (dt > 0.0005 && dt < 0.5)
                 {
+                    deltas.Add(dt);
                     double inst = 1.0 / dt;
                     if (inst < lo) lo = inst;
                     if (inst > hi) hi = inst;
@@ -281,6 +382,13 @@ namespace NetSpeedBoss
             }
             minFps = lo < double.MaxValue ? lo : fps;
             maxFps = hi > 0 ? hi : fps;
+            if (deltas.Count > 0)
+            {
+                deltas.Sort();
+                int idx99 = Math.Max(0, Math.Min(deltas.Count - 1, (int)Math.Floor(deltas.Count * 0.99)));
+                low1Fps = 1.0 / deltas[idx99];
+            }
+            else low1Fps = minFps;
         }
 
         // ---- Non-game exclusion list & game path heuristics ----
@@ -388,6 +496,7 @@ namespace NetSpeedBoss
             long nvUsed = -1, nvTot = -1;
             int nvClk = -1;
             bool isNv = activeGpu != null && activeGpu.VendorId == 0x10DE;
+            bool isAmd = activeGpu != null && activeGpu.VendorId == 0x1002;
             if (isNv && Nvml.Read(ref nvUtil, ref nvTemp, ref nvFan, ref nvUsed, ref nvTot, ref nvClk, ref nvPower))
             {
                 GpuUtil = nvUtil; GpuTempC = nvTemp; GpuFanPct = nvFan;
@@ -399,13 +508,21 @@ namespace NetSpeedBoss
                 GpuTempC = -1; GpuFanPct = -1; GpuPowerW = -1; GpuClockMhz = -1;
                 VramUsedMB = activeGpu.DedicatedUsed / 1048576L;
                 VramTotalMB = activeGpu.Vram / 1048576L;
+                if (isAmd)
+                {
+                    double aUtil = GpuUtil, aTemp = -1, aFan = -1; int aClk = -1;
+                    if (AmdAdl.Read(ref aUtil, ref aTemp, ref aFan, ref aClk))
+                    {
+                        GpuUtil = aUtil; GpuTempC = aTemp; GpuFanPct = aFan; GpuClockMhz = aClk;
+                    }
+                }
             }
 
             // 3. DXGI + D3D9 ETW FPS (when Admin + HUD auto or forced)
             EnsureFpsEtw(app.IsAdmin && (app.S.GameHudAuto || hudForcedOn));
-            double fps, minF, maxF, fms;
-            ComputeFpsForPid(fgPid, out fps, out minF, out maxF, out fms);
-            Fps = fps; FpsMin = minF; FpsMax = maxF; FrameMs = fms;
+            double fps, minF, maxF, low1F, fms;
+            ComputeFpsForPid(fgPid, out fps, out minF, out maxF, out low1F, out fms);
+            Fps = fps; FpsMin = minF; FpsMax = maxF; Fps1PctLow = low1F; FrameMs = fms;
             FpsHist[HistPos] = fps;
             FrameMsHist[HistPos] = fms;
             HistPos = (HistPos + 1) % FpsHist.Length;
@@ -438,6 +555,7 @@ namespace NetSpeedBoss
             }
             else if (GameActive && (DateTime.UtcNow - lastGameSeenUtc).TotalSeconds > 2.5)
             {
+                FinishSession(app.S.GameHudLogSessions);
                 GameActive = false;
                 DetectReason = "No active game";
                 if (!hudForcedOn) return;
@@ -499,6 +617,55 @@ namespace NetSpeedBoss
             }
             if ((DateTime.UtcNow - lastPingUtc).TotalSeconds >= 2 && !pingBusy)
                 PingAsync(srvIp);
+
+            // 8. Track active game session telemetry
+            if (GameActive) UpdateSession(app.S.GameHudLogSessions);
+        }
+
+        void UpdateSession(bool saveCsv)
+        {
+            if (!sessTracking || !string.Equals(sessGameName, GameName, StringComparison.OrdinalIgnoreCase))
+            {
+                if (sessTracking) FinishSession(saveCsv);
+                sessTracking = true;
+                sessGameName = GameName;
+                sessStartLocal = DateTime.Now;
+                sessFpsSum = 0; sessFpsSamples = 0; sessLow1Min = double.MaxValue;
+                sessPeakGpuTemp = -1; sessPeakCpuTemp = -1;
+                sessNetRxBytes = 0; sessNetTxBytes = 0;
+                lastSessionSampleUtc = DateTime.UtcNow;
+            }
+            DateTime nowU = DateTime.UtcNow;
+            double dt = Math.Max(0, Math.Min(5.0, (nowU - lastSessionSampleUtc).TotalSeconds));
+            lastSessionSampleUtc = nowU;
+            sessNetRxBytes += (long)(GameRx * dt);
+            sessNetTxBytes += (long)(GameTx * dt);
+            if (Fps > 1) { sessFpsSum += Fps; sessFpsSamples++; }
+            if (Fps1PctLow > 1 && Fps1PctLow < sessLow1Min) sessLow1Min = Fps1PctLow;
+            if (GpuTempC > sessPeakGpuTemp) sessPeakGpuTemp = GpuTempC;
+            if (CpuTempC > sessPeakCpuTemp) sessPeakCpuTemp = CpuTempC;
+        }
+
+        void FinishSession(bool saveCsv)
+        {
+            if (!sessTracking) return;
+            sessTracking = false;
+            DateTime end = DateTime.Now;
+            double sec = (end - sessStartLocal).TotalSeconds;
+            if (sec < 30 || string.IsNullOrEmpty(sessGameName)) return;
+            GameSessionSummary sum = new GameSessionSummary();
+            sum.GameName = sessGameName;
+            sum.StartedAt = sessStartLocal;
+            sum.EndedAt = end;
+            sum.DurationSec = (int)sec;
+            sum.AvgFps = sessFpsSamples > 0 ? sessFpsSum / sessFpsSamples : 0;
+            sum.Low1Fps = sessLow1Min < double.MaxValue ? sessLow1Min : 0;
+            sum.PeakGpuTemp = sessPeakGpuTemp;
+            sum.PeakCpuTemp = sessPeakCpuTemp;
+            sum.BytesDown = sessNetRxBytes;
+            sum.BytesUp = sessNetTxBytes;
+            LastSession = sum;
+            if (saveCsv) sum.AppendToCsv();
         }
 
         static readonly Regex CoreRx = new Regex(@"^(\d+),(\d+)$", RegexOptions.Compiled);
@@ -596,8 +763,37 @@ namespace NetSpeedBoss
 
         public void Dispose()
         {
+            FinishSession(true);
             StopFpsEtw();
             Nvml.Shutdown();
+            AmdAdl.Shutdown();
+        }
+    }
+
+    public class GameSessionSummary
+    {
+        public string GameName = "";
+        public DateTime StartedAt, EndedAt;
+        public int DurationSec;
+        public double AvgFps, Low1Fps, PeakGpuTemp, PeakCpuTemp;
+        public long BytesDown, BytesUp;
+
+        public void AppendToCsv()
+        {
+            try
+            {
+                System.IO.Directory.CreateDirectory(Settings.LogDir);
+                string path = System.IO.Path.Combine(Settings.LogDir, "game-sessions.csv");
+                bool isNew = !System.IO.File.Exists(path);
+                string hdr = "Started,Ended,Game,Duration(s),Avg FPS,1% Low FPS,Peak GPU Temp(C),Peak CPU Temp(C),Downloaded(MB),Uploaded(MB)\r\n";
+                string row = string.Format(CultureInfo.InvariantCulture,
+                    "{0:yyyy-MM-dd HH:mm:ss},{1:yyyy-MM-dd HH:mm:ss},{2},{3},{4:0.0},{5:0.0},{6:0},{7:0},{8:0.00},{9:0.00}\r\n",
+                    StartedAt, EndedAt, GameName.Replace(',', ' '), DurationSec, AvgFps, Low1Fps,
+                    PeakGpuTemp > 0 ? PeakGpuTemp : 0, PeakCpuTemp > 0 ? PeakCpuTemp : 0,
+                    BytesDown / 1048576.0, BytesUp / 1048576.0);
+                System.IO.File.AppendAllText(path, (isNew ? hdr : "") + row, System.Text.Encoding.UTF8);
+            }
+            catch { }
         }
     }
 }

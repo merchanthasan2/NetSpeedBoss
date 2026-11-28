@@ -29,7 +29,7 @@ namespace NetSpeedBoss
         }
     }
 
-    public class Dashboard : Form
+    public partial class Dashboard : Form
     {
         readonly TrayApp app;
         readonly ModernTabControl tabs = new ModernTabControl();
@@ -47,7 +47,7 @@ namespace NetSpeedBoss
         TopAppsPanel topApps;
         ComboBox rangeBox;
         Label lblPing, lblWanMode, lblSpeedResult;
-        Button btnSpeedTest;
+        Button btnSpeedTest, btnSpeedHistory;
         readonly SpeedTester speedTester = new SpeedTester();
         DateTime lastPingAt = DateTime.MinValue;
         bool pingBusy;
@@ -56,11 +56,13 @@ namespace NetSpeedBoss
         DateTime lastAdapterRefresh = DateTime.MinValue;
 
         // apps
-        DbListView procList, epList;
+        DbListView procList, epList, portsList;
+        SplitContainer appsSplit;
         Label appsStatus;
         TextBox txtAppSearch;
         Button btnElevate;
-        CheckBox chkActiveOnly, chkResolve;
+        CheckBox chkActiveOnly, chkResolve, chkAlertNewApps, chkPortsMode;
+        DateTime lastPortsRefresh = DateTime.MinValue;
         readonly ImageList icons = new ImageList();
         readonly Dictionary<string, int> iconIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         int procSortCol = -1; bool procSortAsc;
@@ -78,16 +80,16 @@ namespace NetSpeedBoss
         // settings
         bool loadingSettings;
         CheckBox sElevated;
-        CheckBox sTaskbar, sShowMeter, sTop, sLock, sFull, sOneLine, sGraph, sStartup, sClickThrough, sAutoUpdate;
-        ComboBox sUnit, sInterval, sAdapter, sThemeMode;
+        CheckBox sTaskbar, sShowMeter, sTop, sLock, sFull, sOneLine, sGraph, sStartup, sClickThrough, sAutoUpdate, sWanDrop, sHogGameOnly;
+        ComboBox sUnit, sInterval, sAdapter, sThemeMode, sProfilePreset;
         TrackBar sOpacity;
-        NumericUpDown sFont, sLimit, sStartDay;
+        NumericUpDown sFont, sLimit, sStartDay, sHogAlert;
         Button bDown, bUp, bBack, bText, bTbText, btnCheckUpdates;
         Label lblUpdateStatus;
         ComboBox tFont;
         NumericUpDown tSize;
-        CheckBox tBold, tAuto;
-        CheckBox sGameAuto, sGameShow, sGameClickThrough, sGameRag;
+        CheckBox tBold, tAuto, tAutoPlace;
+        CheckBox sGameAuto, sGameShow, sGameClickThrough, sGameRag, sGameStrip, sGameHotkeys, sGameLogSess;
         CheckBox sHudFps, sHudGpu, sHudCpu, sHudMem, sHudNet, sHudGraph;
         ComboBox sGameCorner, sGamePreset;
         TrackBar sGameOpacity;
@@ -96,6 +98,38 @@ namespace NetSpeedBoss
         Button bHudBg, bHudBorder, bHudText, bHudFps, bHudGpu, bHudCpu, bHudMem, bHudNet;
         GameHudPreview hudPreview;
         SpecList gameDiagList;
+
+        static Icon cachedAppIcon, cachedSmallIcon, cachedBigIcon;
+        public static Icon GetAppIcon()
+        {
+            if (cachedAppIcon != null) return cachedAppIcon;
+            try
+            {
+                using (Stream st = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("NetSpeedBoss.app.ico"))
+                {
+                    if (st != null) { cachedAppIcon = new Icon(st); return cachedAppIcon; }
+                }
+            }
+            catch { }
+            try { cachedAppIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            return cachedAppIcon;
+        }
+
+        void ApplyWindowIcons()
+        {
+            Icon ic = GetAppIcon();
+            if (ic == null) return;
+            Icon = ic;
+            if (!IsHandleCreated) return;
+            try
+            {
+                if (cachedSmallIcon == null) cachedSmallIcon = new Icon(ic, SystemInformation.SmallIconSize);
+                if (cachedBigIcon == null) cachedBigIcon = new Icon(ic, SystemInformation.IconSize);
+                Native.SendMessage(Handle, Native.WM_SETICON, new IntPtr(0), cachedSmallIcon.Handle);
+                Native.SendMessage(Handle, Native.WM_SETICON, new IntPtr(1), cachedBigIcon.Handle);
+            }
+            catch { }
+        }
 
         public Dashboard(TrayApp app)
         {
@@ -107,9 +141,9 @@ namespace NetSpeedBoss
             ForeColor = Theme.Ink;
             StartPosition = FormStartPosition.CenterScreen;
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
-            Size = new Size(Math.Min(wa.Width, Math.Max(920, app.S.DashW)), Math.Min(wa.Height, Math.Max(780, app.S.DashH)));
-            MinimumSize = new Size(780, 640);
-            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            Size = new Size(Math.Min(wa.Width, Math.Max(940, app.S.DashW)), Math.Min(wa.Height, Math.Max(780, app.S.DashH)));
+            MinimumSize = new Size(840, 640);
+            ApplyWindowIcons();
             icons.ColorDepth = ColorDepth.Depth32Bit;
             icons.ImageSize = new Size(16, 16);
 
@@ -117,17 +151,20 @@ namespace NetSpeedBoss
             tabs.Margin = Padding.Empty;
             tabs.TabPages.Add(BuildLive());
             tabs.TabPages.Add(BuildApps());
+            tabs.TabPages.Add(BuildNetwork());
             tabs.TabPages.Add(BuildUsage());
             tabs.TabPages.Add(BuildSystem());
             tabs.TabPages.Add(BuildGamingHud());
+            tabs.TabPages.Add(BuildDisplays());
             tabs.TabPages.Add(BuildSettings());
+            tabs.TabPages.Add(BuildAbout());
             tabs.SelectedIndexChanged += delegate { SyncNavButtons(); lastUsageRefresh = DateTime.MinValue; OnTick(); };
             Controls.Add(tabs);
             Controls.Add(BuildModeBar());
             Controls.Add(BuildUpdateBar());
             Controls.Add(BuildNavBar());
 
-            HandleCreated += delegate { ApplyDwmFrame(); };
+            HandleCreated += delegate { ApplyDwmFrame(); ApplyWindowIcons(); };
             FormClosing += delegate
             {
                 if (WindowState == FormWindowState.Normal) { app.S.DashW = Width; app.S.DashH = Height; }
@@ -163,7 +200,7 @@ namespace NetSpeedBoss
 
             FlowLayoutPanel left = new FlowLayoutPanel(); left.Dock = DockStyle.Left; left.AutoSize = true; left.WrapContents = false;
             left.Padding = new Padding(0, 4, 0, 0);
-            string[] names = { "Live", "Apps", "Usage", "System", "Gaming HUD", "Settings" };
+            string[] names = { "Live", "Apps", "Network", "Usage", "System", "Gaming HUD", "Displays", "Settings", "About" };
             for (int i = 0; i < names.Length; i++)
             {
                 int idx = i;
@@ -171,12 +208,12 @@ namespace NetSpeedBoss
                 b.Text = names[i];
                 b.Tag = idx;
                 b.AutoSize = true;
-                b.MinimumSize = new Size(76, 38);
+                b.MinimumSize = new Size(46, 38);
                 b.FlatStyle = FlatStyle.Flat;
                 b.FlatAppearance.BorderSize = 0;
                 b.Font = navFont;
                 b.Cursor = Cursors.Hand;
-                b.Margin = new Padding(0, 0, 4, 0);
+                b.Margin = new Padding(0, 0, 2, 0);
                 b.Paint += delegate(object s, PaintEventArgs e)
                 {
                     if (tabs.SelectedIndex != idx) return;
@@ -593,22 +630,28 @@ namespace NetSpeedBoss
             btnSpeedTest.Click += delegate { ToggleSpeedTest(); };
             tip.SetToolTip(btnSpeedTest, "Run multi-stream speed test (measures combined load-balanced bandwidth)");
 
-            lblPing = new Label(); lblPing.AutoSize = false; lblPing.Size = new Size(94, 22); lblPing.Tag = "keepcolor"; lblPing.Cursor = Cursors.Hand;
+            btnSpeedHistory = new Button(); btnSpeedHistory.Text = "History"; btnSpeedHistory.Size = new Size(64, 24);
+            btnSpeedHistory.Font = new Font("Segoe UI", 8.5f);
+            btnSpeedHistory.Click += delegate { ShowSpeedHistoryDialog(); };
+            tip.SetToolTip(btnSpeedHistory, "View saved Speedtest history");
+
+            lblPing = new Label(); lblPing.AutoSize = false; lblPing.Size = new Size(134, 22); lblPing.Tag = "keepcolor"; lblPing.Cursor = Cursors.Hand;
             lblPing.Paint += PaintPingPill;
             lblPing.Click += delegate { CheckPingAsync(true); };
-            tip.SetToolTip(lblPing, "Latency to 1.1.1.1 (click to re-test)");
+            tip.SetToolTip(lblPing, "Latency, jitter & packet loss to 1.1.1.1 (click to re-test)");
             rangeBox = new ComboBox(); rangeBox.DropDownStyle = ComboBoxStyle.DropDownList; rangeBox.Width = 104;
             rangeBox.Items.AddRange(new object[] { "1 minute", "2 minutes", "5 minutes", "10 minutes" });
             rangeBox.SelectedIndex = 1;
             rangeBox.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             rangeBox.SelectedIndexChanged += delegate { graph.Seconds = new int[] { 60, 120, 300, 600 }[rangeBox.SelectedIndex]; graph.Invalidate(); };
             graphBar.Controls.Add(gl); graphBar.Controls.Add(lblWanMode); graphBar.Controls.Add(lblSpeedResult);
-            graphBar.Controls.Add(btnSpeedTest); graphBar.Controls.Add(lblPing); graphBar.Controls.Add(rangeBox);
+            graphBar.Controls.Add(btnSpeedTest); graphBar.Controls.Add(btnSpeedHistory); graphBar.Controls.Add(lblPing); graphBar.Controls.Add(rangeBox);
             Action layoutGraphBar = delegate
             {
                 rangeBox.Location = new Point(graphBar.Width - rangeBox.Width - 4, 4);
                 lblPing.Location = new Point(rangeBox.Left - lblPing.Width - 8, 5);
-                btnSpeedTest.Location = new Point(lblPing.Left - btnSpeedTest.Width - 8, 4);
+                btnSpeedHistory.Location = new Point(lblPing.Left - btnSpeedHistory.Width - 6, 4);
+                btnSpeedTest.Location = new Point(btnSpeedHistory.Left - btnSpeedTest.Width - 6, 4);
                 lblWanMode.Location = new Point(gl.Right + 10, 8);
                 int resLeft = lblWanMode.Right + 12;
                 lblSpeedResult.Location = new Point(resLeft, 6);
@@ -708,6 +751,13 @@ namespace NetSpeedBoss
                     AdapterInfo a = ads[i];
                     if (a.IPv4 == null) a.IPv4 = NetMonitor.GetIPv4(a.Id);
                     ListViewItem it = i < adapterList.Items.Count ? adapterList.Items[i] : adapterList.Items.Add("");
+                    double totRate = app.CurRx + app.CurTx;
+                    string wanCol = a.Selected ? "✔" : "";
+                    if (a.Selected && a.HasGateway && multi)
+                    {
+                        double pct = totRate > 512 ? Math.Round(100.0 * (a.RxBps + a.TxBps) / totRate) : 0;
+                        wanCol = pct > 0 ? pct.ToString("0") + "% · ✔ WAN" : "✔ WAN";
+                    }
                     SetRow(it, new string[] {
                         a.Name,
                         Fmt.Speed(a.RxBps, s.Unit),
@@ -717,7 +767,7 @@ namespace NetSpeedBoss
                         a.Gateway,
                         Fmt.Size(a.BytesIn),
                         Fmt.Size(a.BytesOut),
-                        a.Selected ? (a.HasGateway && multi ? "✔ WAN" : "✔") : ""
+                        wanCol
                     });
                     Color fc = a.Selected ? Theme.Ink : Theme.Muted;
                     if (it.ForeColor != fc) it.ForeColor = fc;
@@ -741,16 +791,57 @@ namespace NetSpeedBoss
             chkActiveOnly = new CheckBox(); chkActiveOnly.Text = "Active only"; chkActiveOnly.AutoSize = true; chkActiveOnly.Margin = new Padding(6, 5, 6, 0);
             chkActiveOnly.CheckedChanged += delegate { TickApps(); };
             chkResolve = new CheckBox(); chkResolve.Text = "Resolve host names"; chkResolve.Checked = true; chkResolve.AutoSize = true; chkResolve.Margin = new Padding(6, 5, 6, 0);
+            chkAlertNewApps = new CheckBox(); chkAlertNewApps.Text = "Alert new apps"; chkAlertNewApps.AutoSize = true; chkAlertNewApps.Margin = new Padding(6, 5, 6, 0);
+            chkAlertNewApps.CheckedChanged += delegate { if (!loadingSettings) { app.S.AlertNewNetworkApps = chkAlertNewApps.Checked; app.S.Save(); } };
+            chkPortsMode = new CheckBox(); chkPortsMode.Text = "Listening ports"; chkPortsMode.AutoSize = true; chkPortsMode.Margin = new Padding(6, 5, 6, 0);
+            chkPortsMode.CheckedChanged += delegate
+            {
+                bool pmOn = chkPortsMode.Checked;
+                appsSplit.Visible = !pmOn;
+                portsList.Visible = pmOn;
+                lastPortsRefresh = DateTime.MinValue;
+                TickApps();
+            };
             Button reset = new Button(); reset.Text = "Reset totals"; reset.AutoSize = true; reset.Click += delegate { app.Procs.ResetTotals(); };
             btnElevate = new Button(); btnElevate.Text = "Restart as administrator"; btnElevate.AutoSize = true;
             btnElevate.Click += delegate { app.RestartElevated(); };
             btnElevate.Visible = !app.IsAdmin;
-            right.Controls.Add(txtAppSearch); right.Controls.Add(chkActiveOnly); right.Controls.Add(chkResolve); right.Controls.Add(reset); right.Controls.Add(btnElevate);
+            right.Controls.Add(txtAppSearch); right.Controls.Add(chkPortsMode); right.Controls.Add(chkActiveOnly); right.Controls.Add(chkResolve); right.Controls.Add(chkAlertNewApps); right.Controls.Add(reset); right.Controls.Add(btnElevate);
             bar.Controls.Add(appsStatus); bar.Controls.Add(right);
 
-            SplitContainer split = new SplitContainer();
-            split.Dock = DockStyle.Fill; split.Orientation = Orientation.Horizontal; split.SplitterWidth = 6;
-            split.BackColor = Theme.Bg;
+            appsSplit = new SplitContainer();
+            appsSplit.Dock = DockStyle.Fill; appsSplit.Orientation = Orientation.Horizontal; appsSplit.SplitterWidth = 6;
+            appsSplit.BackColor = Theme.Bg;
+
+            portsList = new DbListView(); portsList.Dock = DockStyle.Fill; portsList.SmallImageList = icons; portsList.MultiSelect = false; portsList.Visible = false;
+            Col(portsList, "Port", 78, HorizontalAlignment.Right);
+            Col(portsList, "Proto", 62, HorizontalAlignment.Center);
+            Col(portsList, "Application", 190, HorizontalAlignment.Left);
+            Col(portsList, "PID", 66, HorizontalAlignment.Right);
+            Col(portsList, "Bind Address", 180, HorizontalAlignment.Left);
+            Col(portsList, "Path", 340, HorizontalAlignment.Left);
+            ContextMenuStrip ptm = new ContextMenuStrip(); ptm.Renderer = ModernMenuRenderer.Instance;
+            ptm.Items.Add("Open http://localhost:<port>", null, delegate
+            {
+                if (portsList.SelectedItems.Count > 0) try { Process.Start("http://localhost:" + portsList.SelectedItems[0].Text); } catch { }
+            });
+            ptm.Items.Add("Copy IP:Port", null, delegate
+            {
+                if (portsList.SelectedItems.Count > 0)
+                    Clipboard.SetText(portsList.SelectedItems[0].SubItems[4].Text + ":" + portsList.SelectedItems[0].Text);
+            });
+            ptm.Items.Add("Kill process locking port...", null, delegate
+            {
+                if (portsList.SelectedItems.Count == 0) return;
+                int pid;
+                if (!int.TryParse(portsList.SelectedItems[0].SubItems[3].Text, out pid)) return;
+                string appN = portsList.SelectedItems[0].SubItems[2].Text;
+                if (MessageBox.Show("Kill " + appN + " (PID " + pid + ") holding port " + portsList.SelectedItems[0].Text + "?",
+                    TrayApp.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+                try { Process.GetProcessById(pid).Kill(); lastPortsRefresh = DateTime.MinValue; TickApps(); }
+                catch (Exception ex) { MessageBox.Show(ex.Message, TrayApp.AppName); }
+            });
+            portsList.ContextMenuStrip = ptm;
 
             procList = new DbListView(); procList.Dock = DockStyle.Fill; procList.SmallImageList = icons; procList.MultiSelect = false;
             Col(procList, "Application", 210, HorizontalAlignment.Left);
@@ -779,6 +870,10 @@ namespace NetSpeedBoss
                 if (v != null && v.Path != null) Process.Start("explorer.exe", "/select,\"" + v.Path + "\"");
             });
             pm.Items.Add("Copy name", null, delegate { ProcView v = SelectedProc(); if (v != null) Clipboard.SetText(v.Name); });
+            pm.Items.Add(new ToolStripSeparator());
+            pm.Items.Add("Block outbound in Windows Firewall...", null, delegate { SetFirewallBlock(SelectedProc(), true); });
+            pm.Items.Add("Remove NetSpeed Boss Firewall block", null, delegate { SetFirewallBlock(SelectedProc(), false); });
+            pm.Items.Add(new ToolStripSeparator());
             pm.Items.Add("End process...", null, delegate
             {
                 ProcView v = SelectedProc();
@@ -804,10 +899,10 @@ namespace NetSpeedBoss
 
             Label epTitle = new Label(); epTitle.Text = "Connections of the selected app"; epTitle.Dock = DockStyle.Top; epTitle.Height = 22;
             epTitle.Font = new Font("Segoe UI Semibold", 9.5f); epTitle.Padding = new Padding(2, 4, 0, 0);
-            split.Panel1.Controls.Add(procList);
-            split.Panel2.Controls.Add(epList); split.Panel2.Controls.Add(epTitle);
-            p.Controls.Add(split); p.Controls.Add(bar);
-            p.Layout += delegate { try { if (split.Height > 200 && split.SplitterDistance < 100) split.SplitterDistance = (int)(split.Height * 0.58); } catch { } };
+            appsSplit.Panel1.Controls.Add(procList);
+            appsSplit.Panel2.Controls.Add(epList); appsSplit.Panel2.Controls.Add(epTitle);
+            p.Controls.Add(appsSplit); p.Controls.Add(portsList); p.Controls.Add(bar);
+            p.Layout += delegate { try { if (appsSplit.Height > 200 && appsSplit.SplitterDistance < 100) appsSplit.SplitterDistance = (int)(appsSplit.Height * 0.58); } catch { } };
             return p;
         }
 
@@ -817,6 +912,35 @@ namespace NetSpeedBoss
             int pid = (int)procList.SelectedItems[0].Tag;
             foreach (ProcView v in app.Procs.Snapshot()) if (v.Pid == pid) return v;
             return null;
+        }
+
+        void SetFirewallBlock(ProcView v, bool block)
+        {
+            if (v == null || string.IsNullOrEmpty(v.Path))
+            {
+                MessageBox.Show("No executable path available for this process.", TrayApp.AppName);
+                return;
+            }
+            string rule = "NetSpeedBoss Block - " + v.Name;
+            if (block && MessageBox.Show("Block all outbound internet access for:\n" + v.Path + "\n\n(Rule: \"" + rule + "\")",
+                TrayApp.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            try
+            {
+                string args = block
+                    ? string.Format("advfirewall firewall add rule name=\"{0}\" dir=out action=block program=\"{1}\" enable=yes", rule, v.Path)
+                    : string.Format("advfirewall firewall delete rule name=\"{0}\" program=\"{1}\"", rule, v.Path);
+                ProcessStartInfo psi = new ProcessStartInfo("netsh", args);
+                if (!app.IsAdmin) { psi.Verb = "runas"; psi.UseShellExecute = true; }
+                else { psi.CreateNoWindow = true; psi.UseShellExecute = false; }
+                using (Process p = Process.Start(psi))
+                {
+                    if (p != null) p.WaitForExit(8000);
+                    MessageBox.Show(p != null && p.ExitCode == 0
+                        ? (block ? "Blocked outbound firewall rule added for " + v.Name : "Removed firewall block for " + v.Name)
+                        : "Windows Firewall did not apply the change (Administrator rights required).", TrayApp.AppName);
+                }
+            }
+            catch (Exception ex) { MessageBox.Show(ex.Message, TrayApp.AppName); }
         }
 
         int IconFor(string path)
@@ -891,6 +1015,34 @@ namespace NetSpeedBoss
 
         void TickApps()
         {
+            if (chkPortsMode != null && chkPortsMode.Checked)
+            {
+                if ((DateTime.UtcNow - lastPortsRefresh).TotalSeconds < 2) return;
+                lastPortsRefresh = DateTime.UtcNow;
+                string q = txtAppSearch != null ? txtAppSearch.Text.Trim() : "";
+                List<ListeningPortInfo> ports = app.Procs.ReadListeners();
+                if (q.Length > 0)
+                    ports.RemoveAll(delegate(ListeningPortInfo lp)
+                    {
+                        return lp.Port.ToString().IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0 &&
+                               lp.ProcessName.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0 &&
+                               lp.LocalAddress.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0;
+                    });
+                appsStatus.Text = "● " + ports.Count + " listening TCP/UDP port(s) — right-click a port to copy, open, or kill locking process";
+                appsStatus.ForeColor = Theme.IsDark ? Color.FromArgb(52, 211, 153) : Color.FromArgb(16, 124, 16);
+                portsList.BeginUpdate();
+                portsList.Items.Clear();
+                foreach (ListeningPortInfo lp in ports)
+                {
+                    ListViewItem it = new ListViewItem(new string[] {
+                        lp.Port.ToString(), lp.Proto, lp.ProcessName, lp.Pid.ToString(), lp.LocalAddress, lp.Path
+                    });
+                    it.ImageIndex = IconFor(lp.Path);
+                    portsList.Items.Add(it);
+                }
+                portsList.EndUpdate();
+                return;
+            }
             Settings s = app.S;
             ProcessMonitor pm = app.Procs;
             List<ProcView> list = pm.Snapshot();
@@ -991,9 +1143,11 @@ namespace NetSpeedBoss
             foreach (StatCard c in new StatCard[] { uToday, uYesterday, uPeriod, u30, uAll }) { c.Dock = DockStyle.Fill; cards.Controls.Add(c); }
 
             Panel limitPanel = new Panel(); limitPanel.Dock = DockStyle.Top; limitPanel.Height = 34; limitPanel.Padding = new Padding(6, 4, 6, 4);
-            limitLabel = new Label(); limitLabel.Dock = DockStyle.Left; limitLabel.Width = 330; limitLabel.TextAlign = ContentAlignment.MiddleLeft;
+            limitLabel = new Label(); limitLabel.Dock = DockStyle.Left; limitLabel.Width = 420; limitLabel.TextAlign = ContentAlignment.MiddleLeft;
+            Button profileCapBtn = new Button(); profileCapBtn.Text = "Profile cap..."; profileCapBtn.Dock = DockStyle.Right; profileCapBtn.Width = 96;
+            profileCapBtn.Click += delegate { PromptProfileCap(); };
             limitBar = new ProgressBar(); limitBar.Dock = DockStyle.Fill; limitBar.Maximum = 1000;
-            limitPanel.Controls.Add(limitBar); limitPanel.Controls.Add(limitLabel);
+            limitPanel.Controls.Add(limitBar); limitPanel.Controls.Add(profileCapBtn); limitPanel.Controls.Add(limitLabel);
 
             Panel chartHost = new Panel(); chartHost.Dock = DockStyle.Fill; chartHost.Padding = new Padding(6);
             CardPanel chartCard = new CardPanel(); chartCard.Dock = DockStyle.Fill; chartCard.Padding = new Padding(8, 6, 8, 6);
@@ -1005,11 +1159,18 @@ namespace NetSpeedBoss
 
             CardPanel listCard = new CardPanel(); listCard.Dock = DockStyle.Fill; listCard.Padding = new Padding(8, 6, 8, 6);
             Panel listHost = new Panel(); listHost.Dock = DockStyle.Fill; listHost.Padding = new Padding(0, 0, 4, 0);
-            usageList = new DbListView(); usageList.Dock = DockStyle.Fill;
+            usageList = new DbListView(); usageList.Dock = DockStyle.Fill; usageList.MultiSelect = false;
             Col(usageList, "Date", 130, HorizontalAlignment.Left);
             Col(usageList, "Downloaded", 95, HorizontalAlignment.Right);
             Col(usageList, "Uploaded", 95, HorizontalAlignment.Right);
             Col(usageList, "Total", 95, HorizontalAlignment.Right);
+            usageList.SelectedIndexChanged += delegate
+            {
+                if (usageList.SelectedItems.Count == 0 || !(usageList.SelectedItems[0].Tag is DateTime)) return;
+                DateTime day = (DateTime)usageList.SelectedItems[0].Tag;
+                rangeLoading = true; rFrom.Value = day; rTo.Value = day; rangeLoading = false;
+                UpdateRange();
+            };
             FlowLayoutPanel btns = new FlowLayoutPanel(); btns.Dock = DockStyle.Bottom; btns.Height = 32; btns.FlowDirection = FlowDirection.RightToLeft;
             Button reset = new Button(); reset.Text = "Reset usage data..."; reset.AutoSize = true;
             reset.Click += delegate
@@ -1219,10 +1380,26 @@ namespace NetSpeedBoss
                 double limit = s.MonthlyLimitGB * 1024 * 1024 * 1024, used = period[0] + period[1];
                 limitBar.Visible = true;
                 limitBar.Value = (int)Math.Min(1000, used / limit * 1000);
-                limitLabel.Text = "Monthly limit: " + Fmt.Size(used) + " of " + s.MonthlyLimitGB + " GB used (" + (used / limit * 100).ToString("0.0") +
-                                  "%), resets on day " + s.MonthStartDay;
+                limitLabel.Text = "Monthly limit: " + Fmt.Size(used) + " of " + s.MonthlyLimitGB + " GB (" + (used / limit * 100).ToString("0.0") + "%)";
             }
-            else { limitBar.Visible = false; limitLabel.Text = "No monthly data limit set (configure in Settings)."; limitLabel.Width = 600; }
+            else
+            {
+                double pCap = u.GetProfileCapGB(app.CurrentNetProfile);
+                long[] pu = u.ProfileRange(app.CurrentNetProfile, ps, today);
+                double pUsed = pu[0] + pu[1];
+                if (pCap > 0)
+                {
+                    double limit = pCap * 1024 * 1024 * 1024;
+                    limitBar.Visible = true;
+                    limitBar.Value = (int)Math.Min(1000, pUsed / limit * 1000);
+                    limitLabel.Text = app.CurrentNetProfile + ": " + Fmt.Size(pUsed) + " / " + pCap + " GB (" + (pUsed / limit * 100).ToString("0.0") + "%)";
+                }
+                else
+                {
+                    limitBar.Visible = false;
+                    limitLabel.Text = app.CurrentNetProfile + " this cycle: " + Fmt.Size(pUsed) + " (no monthly limit set)";
+                }
+            }
 
             usageChart.Invalidate();
             if ((DateTime.UtcNow - lastUsageRefresh).TotalSeconds >= 5)
@@ -1232,9 +1409,40 @@ namespace NetSpeedBoss
                 usageList.BeginUpdate();
                 usageList.Items.Clear();
                 foreach (KeyValuePair<DateTime, long[]> kv in u.All())
-                    usageList.Items.Add(new ListViewItem(new string[] { kv.Key.ToString("ddd, d MMM yyyy"), Fmt.Size(kv.Value[0]),
-                        Fmt.Size(kv.Value[1]), Fmt.Size(kv.Value[0] + kv.Value[1]) }));
+                {
+                    ListViewItem it = new ListViewItem(new string[] { kv.Key.ToString("ddd, d MMM yyyy"), Fmt.Size(kv.Value[0]),
+                        Fmt.Size(kv.Value[1]), Fmt.Size(kv.Value[0] + kv.Value[1]) });
+                    it.Tag = kv.Key;
+                    usageList.Items.Add(it);
+                }
                 usageList.EndUpdate();
+            }
+        }
+
+        void PromptProfileCap()
+        {
+            string prof = app.CurrentNetProfile;
+            double cur = app.Usage.GetProfileCapGB(prof);
+            using (Form f = new Form())
+            {
+                f.Text = "Network Profile Monthly Cap";
+                f.Icon = GetAppIcon();
+                f.StartPosition = FormStartPosition.CenterParent;
+                f.FormBorderStyle = FormBorderStyle.FixedDialog;
+                f.MaximizeBox = false; f.MinimizeBox = false;
+                f.Size = new Size(360, 170);
+                f.BackColor = Theme.Bg; f.ForeColor = Theme.Ink; f.Font = uiFont;
+                Label l = new Label(); l.Text = "Monthly cap in GB for \"" + prof + "\" (0 = off):";
+                l.AutoSize = false; l.SetBounds(16, 16, 320, 32);
+                NumericUpDown n = new NumericUpDown(); n.Minimum = 0; n.Maximum = 10000; n.DecimalPlaces = 1;
+                n.Value = (decimal)Math.Max(0, Math.Min(10000, cur)); n.SetBounds(16, 52, 120, 26);
+                Button ok = new Button(); ok.Text = "Save"; ok.SetBounds(172, 92, 76, 28);
+                Button cancel = new Button(); cancel.Text = "Cancel"; cancel.SetBounds(254, 92, 76, 28);
+                ok.Click += delegate { app.Usage.SetProfileCapGB(prof, (double)n.Value); lastUsageRefresh = DateTime.MinValue; TickUsage(); f.Close(); };
+                cancel.Click += delegate { f.Close(); };
+                f.Controls.AddRange(new Control[] { l, n, ok, cancel });
+                ApplyThemeTo(f);
+                f.ShowDialog(this);
             }
         }
 
@@ -1243,7 +1451,7 @@ namespace NetSpeedBoss
         SpecList specs, netSpecs, osSpecs;
         Panel specHost;
         TableLayoutPanel sysBottomRow;
-        Button btnCheckIp, btnCopyIp;
+        Button btnCheckIp, btnCopyIp, btnDnsBench;
         SystemInfo sysInfo;
         PublicIpInfo publicIp;
         string lastLocalIp = "";
@@ -1290,7 +1498,9 @@ namespace NetSpeedBoss
             };
             btnCheckIp = new Button(); btnCheckIp.Text = "Check Public IP & ISP"; btnCheckIp.AutoSize = true;
             btnCheckIp.Click += delegate { RequestPublicIp(); };
-            bar.Controls.Add(copy); bar.Controls.Add(btnCopyIp); bar.Controls.Add(btnCheckIp);
+            btnDnsBench = new Button(); btnDnsBench.Text = "DNS benchmark"; btnDnsBench.AutoSize = true;
+            btnDnsBench.Click += delegate { RunDnsBenchmarkDialog(); };
+            bar.Controls.Add(copy); bar.Controls.Add(btnCopyIp); bar.Controls.Add(btnDnsBench); bar.Controls.Add(btnCheckIp);
 
             specHost.Controls.Add(sysBottomRow); specHost.Controls.Add(gap); specHost.Controls.Add(specs); specHost.Controls.Add(bar);
             p.Controls.Add(specHost); p.Controls.Add(cards);
@@ -1506,6 +1716,9 @@ namespace NetSpeedBoss
             sGameAuto = chk("Auto-show for all Windows GPU games"); row("", sGameAuto);
             sGameShow = chk("Pin / preview Gaming HUD overlay now"); row("", sGameShow);
             sGameClickThrough = chk("Click-through (ignore mouse clicks)"); row("", sGameClickThrough);
+            sGameStrip = chk("Compact horizontal top-strip layout"); row("", sGameStrip);
+            sGameHotkeys = chk("Global hotkeys (Ctrl+Shift+H HUD, +L lock, +M mini meter)"); row("", sGameHotkeys);
+            sGameLogSess = chk("Save finished game session summaries (game-sessions.csv)"); row("", sGameLogSess);
 
             FlowLayoutPanel gpos = new FlowLayoutPanel(); gpos.AutoSize = true; gpos.WrapContents = false;
             sGameCorner = new ComboBox(); sGameCorner.DropDownStyle = ComboBoxStyle.DropDownList; sGameCorner.Width = 126;
@@ -1678,8 +1891,19 @@ namespace NetSpeedBoss
             rows.Add(new SpecRow("Graphics API", string.IsNullOrEmpty(t.GraphicsApi) ? "GPU Engine counters" : t.GraphicsApi, null));
             BrandStyle gBrand = app.Sys.Gpus.Count > 0 ? app.Sys.Gpus[0].Brand : null;
             rows.Add(new SpecRow("Active GPU", string.IsNullOrEmpty(gpuDisp) ? "Detecting..." : gpuDisp + (t.GpuUtil >= 0 ? "   ·   " + t.GpuUtil.ToString("0") + "%" : ""), gBrand));
-            rows.Add(new SpecRow("FPS trace", app.IsAdmin ? (t.FpsEtwActive ? "ETW DXGI + D3D9 ready" : "Standby") : "Standard user (Restart as Admin for DXGI/D3D9 FPS)", null));
+            rows.Add(new SpecRow("FPS trace", app.IsAdmin ? (t.FpsEtwActive ? "ETW DXGI + D3D9 ready" + (t.Fps > 0.5 ? "  ·  " + t.Fps.ToString("0") + " FPS (1% " + t.Fps1PctLow.ToString("0") + ")" : "") : "Standby") : "Standard user (Restart as Admin for DXGI/D3D9 FPS)", null));
             rows.Add(new SpecRow("Online ping", t.PingMs >= 0 ? t.PingMs + " ms (" + t.PingLabel + (t.PingTarget.Length > 0 ? " · " + t.PingTarget : "") + ")" : "Idle", null));
+            if (app.LagDoc.LastResult != null)
+            {
+                LagDiagnosis ld = app.LagDoc.LastResult;
+                rows.Add(new SpecRow("Bufferbloat", "Grade " + ld.Grade + "  ·  " + ld.Verdict, null));
+            }
+            if (t.LastSession != null)
+            {
+                GameSessionSummary ls = t.LastSession;
+                string dur = ls.DurationSec >= 60 ? (ls.DurationSec / 60) + "m " + (ls.DurationSec % 60) + "s" : ls.DurationSec + "s";
+                rows.Add(new SpecRow("Last session", ls.GameName + " (" + dur + ")  ·  Avg " + ls.AvgFps.ToString("0") + " / 1% " + ls.Low1Fps.ToString("0") + " FPS", null));
+            }
             gameDiagList.Rows = rows;
             gameDiagList.Invalidate();
         }
@@ -1717,6 +1941,15 @@ namespace NetSpeedBoss
             sThemeMode.Items.AddRange(new object[] { "Follow Windows theme", "Light", "Dark" });
             sThemeMode.SelectedIndexChanged += delegate { SaveUi(); };
             row("Dashboard theme", sThemeMode);
+            sProfilePreset = new ComboBox(); sProfilePreset.DropDownStyle = ComboBoxStyle.DropDownList; sProfilePreset.Width = 220;
+            sProfilePreset.Items.AddRange(new object[] { "Standard", "Gaming", "Travel" });
+            sProfilePreset.SelectedIndexChanged += delegate
+            {
+                if (loadingSettings || sProfilePreset.SelectedItem == null) return;
+                app.ApplyProfilePreset((string)sProfilePreset.SelectedItem);
+                LoadSettingsIntoUi();
+            };
+            row("Quick profile", sProfilePreset);
 
             header("Administrator & Startup");
             Label adminState = new Label(); adminState.AutoSize = true;
@@ -1755,7 +1988,8 @@ namespace NetSpeedBoss
             row("", sElevated);
 
             header("Taskbar speed");
-            sTaskbar = check("Show speed on the taskbar (next to the clock - drag it to move)"); row("", sTaskbar);
+            sTaskbar = check("Show speed on the taskbar (drag freely to move anywhere)"); row("", sTaskbar);
+            tAutoPlace = check("Auto-position in empty taskbar space (near Weather bar)"); row("", tAutoPlace);
             tFont = new ComboBox(); tFont.DropDownStyle = ComboBoxStyle.DropDownList; tFont.Width = 220; tFont.MaxDropDownItems = 20;
             foreach (FontFamily ff in FontFamily.Families) tFont.Items.Add(ff.Name);
             tFont.SelectedIndexChanged += delegate { SaveUi(); };
@@ -1792,7 +2026,7 @@ namespace NetSpeedBoss
             row("Colors", colors);
             FlowLayoutPanel pos = new FlowLayoutPanel(); pos.AutoSize = true; pos.WrapContents = false;
             Button resetPos = new Button(); resetPos.Text = "Reset positions"; resetPos.AutoSize = true;
-            resetPos.Click += delegate { app.S.X = int.MinValue; app.S.TaskbarOffset = 6; app.Changed(); };
+            resetPos.Click += delegate { app.S.X = int.MinValue; app.S.TaskbarAutoPlace = true; app.S.TaskbarOffset = 6; app.Changed(); };
             pos.Controls.Add(resetPos);
             row("Position", pos);
 
@@ -1808,6 +2042,8 @@ namespace NetSpeedBoss
             sAdapter = new ComboBox(); sAdapter.DropDownStyle = ComboBoxStyle.DropDownList; sAdapter.Width = 360;
             sAdapter.SelectedIndexChanged += delegate { SaveUi(); };
             row("Network adapter", sAdapter);
+            sWanDrop = check("Alert when a multi-WAN internet link drops or recovers");
+            row("", sWanDrop);
 
             header("Data usage");
             sLimit = new NumericUpDown(); sLimit.Minimum = 0; sLimit.Maximum = 100000; sLimit.DecimalPlaces = 1; sLimit.Width = 90;
@@ -1816,6 +2052,11 @@ namespace NetSpeedBoss
             sStartDay = new NumericUpDown(); sStartDay.Minimum = 1; sStartDay.Maximum = 28; sStartDay.Width = 70;
             sStartDay.ValueChanged += delegate { SaveUi(); };
             row("Billing cycle starts on day", sStartDay);
+            sHogAlert = new NumericUpDown(); sHogAlert.Minimum = 0; sHogAlert.Maximum = 500; sHogAlert.DecimalPlaces = 1; sHogAlert.Width = 90;
+            sHogAlert.ValueChanged += delegate { SaveUi(); };
+            row("Bandwidth hog alert MB/s (0 = off)", sHogAlert);
+            sHogGameOnly = check("Only alert about background downloads while gaming");
+            row("", sHogGameOnly);
 
             header("Updates");
             bool isStore = Updater.IsStoreApp();
@@ -1849,13 +2090,28 @@ namespace NetSpeedBoss
             row("", updRow);
 
             header("Data & folders");
-            FlowLayoutPanel sys = new FlowLayoutPanel(); sys.AutoSize = true; sys.WrapContents = false;
+            FlowLayoutPanel sys = new FlowLayoutPanel(); sys.AutoSize = true; sys.WrapContents = true;
             Button logsBtn = new Button(); logsBtn.Text = "Open usage logs (Documents)"; logsBtn.AutoSize = true;
             logsBtn.Click += delegate { OpenLogFolder(); };
             sys.Controls.Add(logsBtn);
             Button folder = new Button(); folder.Text = "Open settings folder"; folder.AutoSize = true;
             folder.Click += delegate { Directory.CreateDirectory(Settings.Dir); Process.Start("explorer.exe", "\"" + Settings.Dir + "\""); };
             sys.Controls.Add(folder);
+            Button diagCopy = new Button(); diagCopy.Text = "Copy diagnostics"; diagCopy.AutoSize = true;
+            diagCopy.Click += delegate { try { Clipboard.SetText(app.BuildDiagnosticsReport()); diagCopy.Text = "Copied ✔"; } catch { } };
+            sys.Controls.Add(diagCopy);
+            Button diagSave = new Button(); diagSave.Text = "Save diagnostics..."; diagSave.AutoSize = true;
+            diagSave.Click += delegate
+            {
+                using (SaveFileDialog d = new SaveFileDialog())
+                {
+                    d.Filter = "Text files|*.txt";
+                    d.FileName = "netspeedboss-diagnostics-" + DateTime.Now.ToString("yyyyMMdd-HHmm") + ".txt";
+                    if (d.ShowDialog(this) == DialogResult.OK)
+                        try { File.WriteAllText(d.FileName, app.BuildDiagnosticsReport(), System.Text.Encoding.UTF8); } catch (Exception ex) { MessageBox.Show(ex.Message, TrayApp.AppName); }
+                }
+            };
+            sys.Controls.Add(diagSave);
             row("", sys);
             Label about = new Label(); about.AutoSize = true; about.ForeColor = Theme.Muted; about.Margin = new Padding(0, 16, 0, 10);
             about.Text = TrayApp.AppName + " " + Application.ProductVersion + (app.IsAdmin ? "  ·  running as administrator" : "") +
@@ -1926,6 +2182,7 @@ namespace NetSpeedBoss
             int fi = tFont.Items.IndexOf(s.TaskbarFontName); tFont.SelectedIndex = fi >= 0 ? fi : Math.Max(0, tFont.Items.IndexOf("Segoe UI"));
             tSize.Value = (decimal)Math.Max(6f, Math.Min(16f, s.TaskbarFontSize));
             tBold.Checked = s.TaskbarBold; tAuto.Checked = s.TaskbarAutoColors;
+            if (tAutoPlace != null) tAutoPlace.Checked = s.TaskbarAutoPlace;
             sShowMeter.Checked = s.ShowMeter; sTop.Checked = s.AlwaysOnTop; sLock.Checked = s.LockPosition;
             sClickThrough.Checked = s.ClickThrough;
             sFull.Checked = s.HideOnFullscreen; sOneLine.Checked = s.Horizontal; sGraph.Checked = s.ShowGraph;
@@ -1946,15 +2203,28 @@ namespace NetSpeedBoss
             sAdapter.SelectedIndex = sel;
             sLimit.Value = (decimal)Math.Max(0, Math.Min(100000, s.MonthlyLimitGB));
             sStartDay.Value = s.MonthStartDay;
+            if (sHogAlert != null) sHogAlert.Value = (decimal)Math.Max(0, Math.Min(500, s.HogAlertMBps));
+            if (sHogGameOnly != null) sHogGameOnly.Checked = s.HogAlertDuringGame;
             sStartup.Checked = app.StartupEnabled;
             sElevated.Checked = app.ElevatedStartupEnabled;
             sAutoUpdate.Checked = s.AutoCheckUpdates;
+            if (sWanDrop != null) sWanDrop.Checked = s.AlertOnWanDrop;
             if (sThemeMode != null) sThemeMode.SelectedIndex = (int)s.ThemeMode;
+            if (chkAlertNewApps != null) chkAlertNewApps.Checked = s.AlertNewNetworkApps;
+            if (chkWatchLan != null) chkWatchLan.Checked = s.WatchNewLanDevices;
+            if (sProfilePreset != null)
+            {
+                int pi = sProfilePreset.Items.IndexOf(s.ProfilePreset);
+                sProfilePreset.SelectedIndex = pi >= 0 ? pi : 0;
+            }
             if (sGameAuto != null)
             {
                 sGameAuto.Checked = s.GameHudAuto;
                 sGameShow.Checked = s.GameHudPinned;
                 sGameClickThrough.Checked = s.GameHudClickThrough;
+                sGameStrip.Checked = s.GameHudStrip;
+                sGameHotkeys.Checked = s.GlobalHotkeysEnabled;
+                sGameLogSess.Checked = s.GameHudLogSessions;
                 sGameCorner.SelectedIndex = Math.Max(0, Math.Min(3, s.GameHudCorner));
                 sGameOpacity.Value = Math.Max(0, Math.Min(99, s.GameHudOpacity));
                 lblGameOpacity.Text = sGameOpacity.Value + "%";
@@ -1995,12 +2265,16 @@ namespace NetSpeedBoss
             if (tFont.SelectedItem != null) s.TaskbarFontName = (string)tFont.SelectedItem;
             s.TaskbarFontSize = (float)tSize.Value;
             s.TaskbarBold = tBold.Checked; s.TaskbarAutoColors = tAuto.Checked;
+            if (tAutoPlace != null) s.TaskbarAutoPlace = tAutoPlace.Checked;
             s.Unit = sUnit.SelectedIndex == 1 ? SpeedUnit.Bits : SpeedUnit.Bytes;
             if (sInterval.SelectedIndex >= 0) app.SetTimerInterval(Intervals[sInterval.SelectedIndex]);
             if (sAdapter.SelectedItem != null) s.Adapter = ((KeyValuePair<string, string>)sAdapter.SelectedItem).Key;
             s.MonthlyLimitGB = (double)sLimit.Value;
             s.MonthStartDay = (int)sStartDay.Value;
+            if (sHogAlert != null) s.HogAlertMBps = (double)sHogAlert.Value;
+            if (sHogGameOnly != null) s.HogAlertDuringGame = sHogGameOnly.Checked;
             s.AutoCheckUpdates = sAutoUpdate.Checked;
+            if (sWanDrop != null) s.AlertOnWanDrop = sWanDrop.Checked;
             DashTheme prevTheme = s.ThemeMode;
             if (sThemeMode != null && sThemeMode.SelectedIndex >= 0) s.ThemeMode = (DashTheme)sThemeMode.SelectedIndex;
             if (prevTheme != s.ThemeMode) ApplyTheme();
@@ -2010,6 +2284,11 @@ namespace NetSpeedBoss
             {
                 s.GameHudAuto = sGameAuto.Checked;
                 s.GameHudClickThrough = sGameClickThrough.Checked;
+                bool stripWas = s.GameHudStrip;
+                s.GameHudStrip = sGameStrip.Checked;
+                if (stripWas != s.GameHudStrip) s.GameHudX = int.MinValue;
+                s.GlobalHotkeysEnabled = sGameHotkeys.Checked;
+                s.GameHudLogSessions = sGameLogSess.Checked;
                 if (sGameCorner.SelectedIndex >= 0) s.GameHudCorner = sGameCorner.SelectedIndex;
                 s.GameHudOpacity = sGameOpacity.Value;
                 s.GameHudRag = sGameRag.Checked;
@@ -2065,13 +2344,14 @@ namespace NetSpeedBoss
             string text = "Ping: ...";
             if (lastPingMs >= 0)
             {
-                text = "Ping: " + lastPingMs + " ms";
-                dot = lastPingMs < 50 ? Color.FromArgb(16, 185, 129)
-                    : (lastPingMs < 120 ? Color.FromArgb(217, 119, 6) : Color.FromArgb(220, 38, 38));
+                text = "Ping: " + lastPingMs + " ms" + (app.PingLossPct > 0 ? " · " + app.PingLossPct.ToString("0") + "% loss"
+                    : " · ±" + app.PingJitterMs.ToString("0") + "ms");
+                dot = (lastPingMs < 50 && app.PingLossPct < 5) ? Color.FromArgb(16, 185, 129)
+                    : ((lastPingMs < 120 && app.PingLossPct < 15) ? Color.FromArgb(217, 119, 6) : Color.FromArgb(220, 38, 38));
             }
             else if (lastPingMs == -1)
             {
-                text = "Ping: timeout";
+                text = "Ping: lost (" + app.PingLossPct.ToString("0") + "%)";
                 dot = Color.FromArgb(220, 38, 38);
             }
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -2104,12 +2384,106 @@ namespace NetSpeedBoss
                         BeginInvoke((MethodInvoker)delegate
                         {
                             lastPingMs = ms;
+                            app.RecordPingSample(ms);
                             pingBusy = false;
-                            if (lblPing != null) lblPing.Invalidate();
+                            if (lblPing != null)
+                            {
+                                tip.SetToolTip(lblPing, string.Format("1.1.1.1 RTT: {0}  ·  Jitter: ±{1:0.0} ms  ·  Loss (last 20): {2:0.0}%\nClick to re-test",
+                                    ms >= 0 ? ms + " ms" : "timeout", app.PingJitterMs, app.PingLossPct));
+                                lblPing.Invalidate();
+                            }
                         });
                     else pingBusy = false;
                 }
                 catch { pingBusy = false; }
+            });
+        }
+
+        void ShowSpeedHistoryDialog()
+        {
+            List<SpeedTestRecord> rows = SpeedTester.LoadHistory(100);
+            using (Form f = new Form())
+            {
+                f.Text = "Speedtest History";
+                f.Icon = GetAppIcon();
+                f.StartPosition = FormStartPosition.CenterParent;
+                f.Size = new Size(640, 420);
+                f.BackColor = Theme.Bg; f.ForeColor = Theme.Ink; f.Font = uiFont;
+                DbListView lv = new DbListView(); lv.Dock = DockStyle.Fill;
+                Col(lv, "Date / Time", 150, HorizontalAlignment.Left);
+                Col(lv, "Download", 105, HorizontalAlignment.Right);
+                Col(lv, "Upload", 105, HorizontalAlignment.Right);
+                Col(lv, "Ping", 75, HorizontalAlignment.Right);
+                Col(lv, "Jitter", 75, HorizontalAlignment.Right);
+                Col(lv, "WANs", 60, HorizontalAlignment.Center);
+                foreach (SpeedTestRecord r in rows)
+                {
+                    lv.Items.Add(new ListViewItem(new string[] {
+                        r.Timestamp.ToString("yyyy-MM-dd HH:mm"),
+                        Fmt.Speed(r.DownloadBps, app.S.Unit),
+                        Fmt.Speed(r.UploadBps, app.S.Unit),
+                        r.PingMs >= 0 ? r.PingMs.ToString("0") + " ms" : "-",
+                        r.JitterMs >= 0 ? r.JitterMs.ToString("0.0") + " ms" : "-",
+                        r.WanCount.ToString()
+                    }));
+                }
+                FlowLayoutPanel bot = new FlowLayoutPanel(); bot.Dock = DockStyle.Bottom; bot.Height = 38; bot.FlowDirection = FlowDirection.RightToLeft;
+                bot.Padding = new Padding(8, 5, 8, 5);
+                Button close = new Button(); close.Text = "Close"; close.AutoSize = true;
+                close.Click += delegate { f.Close(); };
+                Button openCsv = new Button(); openCsv.Text = "Open CSV folder"; openCsv.AutoSize = true;
+                openCsv.Click += delegate { OpenLogFolder(); };
+                Label summary = new Label(); summary.Dock = DockStyle.Fill; summary.TextAlign = ContentAlignment.MiddleLeft; summary.Padding = new Padding(8, 0, 0, 0);
+                summary.Text = rows.Count == 0 ? "No completed speedtests logged yet. Run Speedtest on the Live tab to save results." : rows.Count + " logged test(s)";
+                bot.Controls.Add(close); bot.Controls.Add(openCsv); bot.Controls.Add(summary);
+                f.Controls.Add(lv); f.Controls.Add(bot);
+                ApplyThemeTo(f);
+                f.ShowDialog(this);
+            }
+        }
+
+        void RunDnsBenchmarkDialog()
+        {
+            btnDnsBench.Enabled = false;
+            btnDnsBench.Text = "Testing DNS...";
+            List<AdapterInfo> nets = app.Net.Adapters;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                List<DnsBenchRow> rows = NetworkInfo.RunDnsBenchmark(nets);
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            btnDnsBench.Enabled = true;
+                            btnDnsBench.Text = "DNS benchmark";
+                            using (Form f = new Form())
+                            {
+                                f.Text = "DNS Resolver Benchmark (UDP port 53)";
+                                f.Icon = GetAppIcon();
+                                f.StartPosition = FormStartPosition.CenterParent;
+                                f.Size = new Size(440, 290);
+                                f.BackColor = Theme.Bg; f.ForeColor = Theme.Ink; f.Font = uiFont;
+                                DbListView lv = new DbListView(); lv.Dock = DockStyle.Fill;
+                                Col(lv, "Provider", 150, HorizontalAlignment.Left);
+                                Col(lv, "IP", 130, HorizontalAlignment.Left);
+                                Col(lv, "Latency", 110, HorizontalAlignment.Right);
+                                foreach (DnsBenchRow r in rows)
+                                    lv.Items.Add(new ListViewItem(new string[] {
+                                        r.Name, r.Server, r.LatencyMs >= 0 ? r.LatencyMs.ToString("0.0") + " ms" : "Timeout"
+                                    }));
+                                FlowLayoutPanel bot = new FlowLayoutPanel(); bot.Dock = DockStyle.Bottom; bot.Height = 38; bot.FlowDirection = FlowDirection.RightToLeft;
+                                bot.Padding = new Padding(8, 5, 8, 5);
+                                Button close = new Button(); close.Text = "Close"; close.AutoSize = true;
+                                close.Click += delegate { f.Close(); };
+                                bot.Controls.Add(close);
+                                f.Controls.Add(lv); f.Controls.Add(bot);
+                                ApplyThemeTo(f);
+                                f.ShowDialog(this);
+                            }
+                        });
+                }
+                catch { btnDnsBench.Enabled = true; btnDnsBench.Text = "DNS benchmark"; }
             });
         }
 
@@ -2152,10 +2526,12 @@ namespace NetSpeedBoss
                     lblSpeedResult.ForeColor = Theme.Ink;
                     break;
                 case SpeedTestPhase.Done:
+                    SpeedTester.AppendHistory(st, Math.Max(1, app.Net.ActiveWanCount));
                     btnSpeedTest.Text = "Speedtest";
                     lblSpeedResult.Text = "↓ " + Fmt.Speed(st.DownloadBps, u) + "  ↑ " + Fmt.Speed(st.UploadBps, u) +
                         (st.PingMs >= 0 ? "  · " + st.PingMs.ToString("0") + " ms" : "");
                     lblSpeedResult.ForeColor = Theme.IsDark ? Color.FromArgb(52, 211, 153) : Color.FromArgb(16, 124, 16);
+                    RefreshSpeedHistoryList();
                     break;
                 case SpeedTestPhase.Cancelled:
                     btnSpeedTest.Text = "Speedtest";
@@ -2168,6 +2544,7 @@ namespace NetSpeedBoss
                     lblSpeedResult.ForeColor = Color.FromArgb(220, 38, 38);
                     break;
             }
+            SyncNetworkSpeedUi(st);
         }
 
         public void SettingsChanged()
@@ -2188,15 +2565,17 @@ namespace NetSpeedBoss
             {
                 case 0: TickLive(); break;
                 case 1: TickApps(); break;
-                case 2: TickUsage(); break;
-                case 3: TickSystem(); break;
-                case 4: TickGamingHud(); break;
+                case 2: TickNetwork(); break;
+                case 3: TickUsage(); break;
+                case 4: TickSystem(); break;
+                case 5: TickGamingHud(); break;
+                case 6: TickDisplays(); break;
             }
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { speedTester.Cancel(); icons.Dispose(); uiFont.Dispose(); navFont.Dispose(); tip.Dispose(); }
+            if (disposing) { DisposeDisplays(); speedTester.Cancel(); lanScanner.Cancel(); app.LagDoc.Cancel(); icons.Dispose(); uiFont.Dispose(); navFont.Dispose(); tip.Dispose(); }
             base.Dispose(disposing);
         }
     }

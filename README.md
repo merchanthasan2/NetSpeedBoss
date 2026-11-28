@@ -54,20 +54,17 @@ Works on Windows 10 and 11 (x64 &amp; ARM64). **No administrator rights needed.*
 
 ## Features
 
-- **Taskbar speed meter.** Blends into the taskbar, follows light and dark mode, and hides for full-screen games and when the taskbar auto-hides.
-- **Make it yours.** Bold text, any font and size, custom colors, bytes (MB/s) or bits (Mbps), and a refresh rate from 0.5 to 5 s.
-- **Live speed graph.** The last 1–10 minutes, with a hover read-out plus peak and session totals.
+- **Taskbar speed meter.** Auto-positions cleanly in empty taskbar space (including beside the Windows 11 Weather bar) or drags anywhere freely, follows light and dark mode, and hides for full-screen games.
+- **Make it yours.** Bold text, any font and size, custom colors, bits (`Mbps`/`Kbps`, default) or bytes (`MB/s`/`KB/s`), and a refresh rate from 0.5 to 5 s.
+- **Live speed graph & lag spikes.** The last 1–10 minutes, with a hover read-out, rolling ping/jitter/packet-loss pill, spike markers, and peak/session totals.
 - **Top downloading apps.** The five busiest apps sit right under the graph. Tick one to draw its own line on the graph.
-- **Apps tab.** Every program on the network, its speed and totals, and each server it connects to, with host names.
-- **Data usage.** Today, yesterday, this month, the last 30 days and all time, with a daily chart and CSV export.
-- **Any date range.** Pick *From* and *To* (or Today / 7 days / 30 days / This month / Last month) to see the totals, daily average, busiest day and top apps for that period.
-- **Usage logs in Documents.** `Documents\NetSpeed Boss\` holds `daily-usage.csv`, `hourly-usage.csv` (with peak speeds) and `app-usage.csv`, ready to open in Excel.
-- **Monthly data cap.** Set your plan's limit and billing day, and get warned when you reach it.
-- **Dual-WAN load balancing & Speedtest.** Automatically sums multiple gateway adapters, shows live per-adapter speeds, and runs a multi-stream Speedtest.
-- **Metal-style Gaming HUD.** Transparent-background overlay that auto-shows in Windows GPU games (DX9–DX12, Vulkan, OpenGL) with configurable RAG colors for FPS, VRAM, GPU temp/fan, multi-core CPU, memory, and online server ping.
-- **System & ISP info.** Live CPU, GPU, and RAM cards alongside organized Hardware, Network & ISP, and OS details with embedded manufacturer logos.
-- **Light & Dark themes.** Automatically follows Windows theme or switches manually in one click.
-- **Floating meter.** An optional always-on-top mini meter with a background graph that snaps to screen edges and can be click-through.
+- **Apps, Firewall & Listening Ports.** Live per-app speeds, remote host resolution, first-time app network alerts, 1-click Windows Firewall block/unblock, and a **Listening ports** toggle with 1-click process termination.
+- **Unified Network tab.** Multi-stream Speedtest + saved history, **Bufferbloat & Lag Doctor** (Grade `A+`–`F` + hop RTT diagnosis), **DNS Benchmark**, **Wireless (Wi-Fi)** card + **Wi-Fi Channel Congestion Analyzer**, **ISP Uptime & Micro-Outage Logger** (`outages.csv` + Plan SLA %), and an **Angry-IP-style LAN/ARP Scanner** with Trusted Device Watchdog & Wake-on-LAN.
+- **Data usage & Per-SSID caps.** Click any daily row to see top apps for that exact day, export date ranges to Excel-ready CSVs (`Documents\NetSpeed Boss\`), and configure global or per-Wi-Fi network monthly data caps + background bandwidth-hog alerts.
+- **Dual-WAN load balancing.** Automatically sums multiple gateway adapters, shows live per-adapter speeds and % traffic share, and alerts on WAN failover drops/recoveries.
+- **Gaming HUD v2.** Background-only transparent overlay (Vertical Card or Compact Horizontal Top-Strip) with 1% Low FPS, DXGI/D3D9 FPS, NVIDIA NVML & AMD ADL sensors, VRAM, RAG thresholds, global hotkeys (`Ctrl+Shift+H` HUD, `+L` click-through lock, `+M` mini meter), and `game-sessions.csv` summaries.
+- **Displays tab.** Native Win32 DDC/CI hardware **Brightness & Contrast** sliders, **Refresh Rate (Hz)** switcher, and **Input Source** (`HDMI`/`DisplayPort`/`USB-C`) selector across external and laptop screens.
+- **System, About & Quick Profiles.** Hardware/OS/ISP cards with vendor logos, **Standard / Gaming / Travel** tray presets, diagnostics export, and an **About** tab with 1-click Store/GitHub/CLI links.
 - **Private and lightweight.** Zero third-party dependencies, no account, no telemetry, no ads. Published by Quantum Step.
 
 ### Per-app speeds (optional admin mode)
@@ -106,19 +103,21 @@ No SDK or Visual Studio needed. It uses the C# compiler that ships with Windows.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1                       # -> bin\NetSpeedBoss.exe
-powershell -ExecutionPolicy Bypass -File build.ps1 -Version 1.3.1 -Installer   # + dist\ installer & zip (needs Inno Setup 6)
+powershell -ExecutionPolicy Bypass -File build.ps1 -Version 1.4.0 -Installer   # + dist\ installer & zip (needs Inno Setup 6)
 ```
 
 | File | What it does |
 |---|---|
-| `src/TaskbarMeter.cs` | Taskbar read-out (per-pixel transparent window docked beside the notification area) |
+| `src/TaskbarMeter.cs` | Taskbar read-out with Windows 11 Weather-bar empty-space auto-placement & free dragging |
 | `src/FloatingMeter.cs` | Floating always-on-top meter |
-| `src/GameHud.cs`, `src/GameTelemetry.cs` | Metal-style transparent Gaming HUD overlay, RAG colors, DXGI/D3D9 FPS, NVML & GPU Engine telemetry |
-| `src/NetMonitor.cs`, `src/SpeedTester.cs` | Multi-WAN adapter counters & multi-stream HTTPS Speedtest |
-| `src/ProcessMonitor.cs` | Per-app traffic (ETW `Microsoft-Windows-Kernel-Network` + TCP connection table) |
-| `src/UsageStore.cs` | Daily usage history |
-| `src/TrayApp.cs` | Tray icon, menu, update loop |
-| `src/Dashboard.cs`, `src/Controls.cs`, `src/SystemControls.cs` | Dashboard UI, Dark/Light themes, charts, and embedded brand logos |
+| `src/GameHud.cs`, `src/GameTelemetry.cs` | Gaming HUD v2 (Card & Strip), 1% Low FPS, RAG colors, DXGI/D3D9, NVML & AMD ADL telemetry |
+| `src/NetMonitor.cs`, `src/SpeedTester.cs` | Multi-WAN adapter counters & multi-stream HTTPS Speedtest + history |
+| `src/LanScanner.cs`, `src/LagDoctor.cs` | Angry-IP-style LAN/ARP scanner, Wake-on-LAN, Bufferbloat doctor, Outage SLA tracker & Guard |
+| `src/DisplayControl.cs` | DDC/CI & WMI multi-monitor brightness, contrast, refresh Hz, and input switcher |
+| `src/ProcessMonitor.cs` | Per-app traffic (ETW `Microsoft-Windows-Kernel-Network`) & TCP/UDP listening port table |
+| `src/UsageStore.cs` | Daily & per-Wi-Fi profile usage history and caps |
+| `src/TrayApp.cs` | Tray icon, menu, global hotkeys, quick profiles, alerts, update loop |
+| `src/Dashboard.cs`, `src/DashboardTabs.cs` | Dashboard UI (Live, Apps, Network, Usage, System, Gaming HUD, Displays, Settings, About) |
 | `tools/sync-logos.ps1` | Syncs official SVG brand logos to embedded PNGs in `assets/logos/` |
 | `installer/NetSpeedBoss.iss` | Inno Setup installer (per-user, no UAC) |
 | `winget/make-manifests.ps1` | Generates the winget manifest for a release |

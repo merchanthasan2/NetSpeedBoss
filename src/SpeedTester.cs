@@ -16,7 +16,15 @@ namespace NetSpeedBoss
         public double PingMs = -1, JitterMs = -1;
         public double DownloadBps, UploadBps;   // bytes per second
         public string Error = "";
+        public bool SavedHistory;
         public bool Running { get { return Phase == SpeedTestPhase.Ping || Phase == SpeedTestPhase.Download || Phase == SpeedTestPhase.Upload; } }
+    }
+
+    public class SpeedTestRecord
+    {
+        public DateTime Timestamp;
+        public double DownloadBps, UploadBps, PingMs, JitterMs;
+        public int WanCount;
     }
 
     /// <summary>
@@ -44,6 +52,7 @@ namespace NetSpeedBoss
             State.PingMs = -1; State.JitterMs = -1;
             State.DownloadBps = 0; State.UploadBps = 0;
             State.Error = "";
+            State.SavedHistory = false;
 
             ThreadPool.QueueUserWorkItem(delegate { Run(onProgress); });
             return true;
@@ -213,6 +222,59 @@ namespace NetSpeedBoss
 
             double finalSec = Math.Max(0.2, (Math.Min(sw.ElapsedMilliseconds, durationMs) - (warmupDone ? warmupMs : 0)) / 1000.0);
             return Interlocked.Read(ref measuredBytes) / finalSec;
+        }
+
+        public static string HistoryPath { get { return Path.Combine(Settings.LogDir, "speedtests.csv"); } }
+
+        public static void AppendHistory(SpeedTestState st, int wanCount)
+        {
+            if (st == null || st.SavedHistory || st.Phase != SpeedTestPhase.Done) return;
+            st.SavedHistory = true;
+            try
+            {
+                Directory.CreateDirectory(Settings.LogDir);
+                bool isNew = !File.Exists(HistoryPath);
+                string hdr = "Timestamp,Download (bytes/s),Upload (bytes/s),Download (Mbps),Upload (Mbps),Ping (ms),Jitter (ms),Active WANs\r\n";
+                System.Globalization.CultureInfo inv = System.Globalization.CultureInfo.InvariantCulture;
+                string row = string.Format(inv, "{0:yyyy-MM-dd HH:mm:ss},{1:0},{2:0},{3:0.00},{4:0.00},{5:0.0},{6:0.0},{7}\r\n",
+                    DateTime.Now, st.DownloadBps, st.UploadBps,
+                    st.DownloadBps * 8 / 1e6, st.UploadBps * 8 / 1e6,
+                    st.PingMs, st.JitterMs, Math.Max(1, wanCount));
+                File.AppendAllText(HistoryPath, (isNew ? hdr : "") + row, System.Text.Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        public static List<SpeedTestRecord> LoadHistory(int maxRows)
+        {
+            List<SpeedTestRecord> list = new List<SpeedTestRecord>();
+            try
+            {
+                if (!File.Exists(HistoryPath)) return list;
+                string[] lines;
+                using (FileStream fs = new FileStream(HistoryPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (StreamReader sr = new StreamReader(fs))
+                    lines = sr.ReadToEnd().Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                System.Globalization.CultureInfo inv = System.Globalization.CultureInfo.InvariantCulture;
+                for (int i = lines.Length - 1; i >= 0 && list.Count < maxRows; i--)
+                {
+                    string[] p = lines[i].Split(',');
+                    if (p.Length < 8) continue;
+                    DateTime ts; double dn, up, ping, jit; int wans;
+                    if (!DateTime.TryParseExact(p[0], "yyyy-MM-dd HH:mm:ss", inv, System.Globalization.DateTimeStyles.None, out ts)) continue;
+                    if (!double.TryParse(p[1], System.Globalization.NumberStyles.Float, inv, out dn)) continue;
+                    if (!double.TryParse(p[2], System.Globalization.NumberStyles.Float, inv, out up)) continue;
+                    double.TryParse(p[5], System.Globalization.NumberStyles.Float, inv, out ping);
+                    double.TryParse(p[6], System.Globalization.NumberStyles.Float, inv, out jit);
+                    int.TryParse(p[7], out wans);
+                    SpeedTestRecord r = new SpeedTestRecord();
+                    r.Timestamp = ts; r.DownloadBps = dn; r.UploadBps = up;
+                    r.PingMs = ping; r.JitterMs = jit; r.WanCount = Math.Max(1, wans);
+                    list.Add(r);
+                }
+            }
+            catch { }
+            return list;
         }
     }
 }

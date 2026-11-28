@@ -10,10 +10,14 @@ namespace NetSpeedBoss
     public class UsageStore
     {
         readonly Dictionary<DateTime, long[]> days = new Dictionary<DateTime, long[]>();
+        readonly Dictionary<string, long[]> profileDays = new Dictionary<string, long[]>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, double> profileCapsGB = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         readonly object gate = new object();
         public static string FilePath { get { return Path.Combine(Settings.LogDir, "daily-usage.csv"); } }
+        public static string ProfileFilePath { get { return Path.Combine(Settings.LogDir, "profile-usage.csv"); } }
+        static string ProfileCapsPath { get { return Path.Combine(Settings.Dir, "profile-caps.ini"); } }
         static string LegacyPath { get { return Path.Combine(Settings.Dir, "usage.csv"); } }
-        bool dirty;
+        bool dirty, profileDirty;
 
         public void Load()
         {
@@ -42,33 +46,96 @@ namespace NetSpeedBoss
                 }
             }
             catch { }
+            LoadProfiles();
+        }
+
+        void LoadProfiles()
+        {
+            try
+            {
+                if (File.Exists(ProfileFilePath))
+                {
+                    string[] lines;
+                    using (FileStream fs = new FileStream(ProfileFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (StreamReader sr = new StreamReader(fs))
+                        lines = sr.ReadToEnd().Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (string line in lines)
+                    {
+                        string[] p = line.Split(',');
+                        if (p.Length < 4) continue;
+                        DateTime d; long rx, tx;
+                        if (!DateTime.TryParseExact(p[0], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out d)) continue;
+                        if (!long.TryParse(p[2], out rx) || !long.TryParse(p[3], out tx)) continue;
+                        string k = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + "|" + p[1];
+                        profileDays[k] = new long[] { rx, tx };
+                    }
+                }
+                if (File.Exists(ProfileCapsPath))
+                {
+                    foreach (string line in File.ReadAllLines(ProfileCapsPath))
+                    {
+                        int eq = line.LastIndexOf('=');
+                        double gb;
+                        if (eq > 0 && double.TryParse(line.Substring(eq + 1), NumberStyles.Float, CultureInfo.InvariantCulture, out gb) && gb > 0)
+                            profileCapsGB[line.Substring(0, eq).Trim()] = gb;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        static void WriteCsvAtomic(string path, string content)
+        {
+            Directory.CreateDirectory(Settings.LogDir);
+            UsageLog.WriteReadme();
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, content, Encoding.UTF8);
+            if (File.Exists(path)) File.Delete(path);   // fails cleanly if locked open in Excel
+            File.Move(tmp, path);
         }
 
         public void Save()
         {
             lock (gate)
             {
-                if (!dirty) return;
-                try
+                if (dirty)
                 {
-                    Directory.CreateDirectory(Settings.LogDir);
-                    UsageLog.WriteReadme();
-                    List<DateTime> keys = new List<DateTime>(days.Keys);
-                    keys.Sort();
-                    StringBuilder sb = new StringBuilder("Date,Downloaded bytes,Uploaded bytes,Total bytes,Downloaded MB,Uploaded MB,Total MB\r\n");
-                    foreach (DateTime k in keys)
+                    try
                     {
-                        long rx = days[k][0], tx = days[k][1];
-                        sb.AppendFormat(CultureInfo.InvariantCulture, "{0:yyyy-MM-dd},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00}\r\n",
-                            k, rx, tx, rx + tx, rx / 1048576.0, tx / 1048576.0, (rx + tx) / 1048576.0);
+                        List<DateTime> keys = new List<DateTime>(days.Keys);
+                        keys.Sort();
+                        StringBuilder sb = new StringBuilder("Date,Downloaded bytes,Uploaded bytes,Total bytes,Downloaded MB,Uploaded MB,Total MB\r\n");
+                        foreach (DateTime k in keys)
+                        {
+                            long rx = days[k][0], tx = days[k][1];
+                            sb.AppendFormat(CultureInfo.InvariantCulture, "{0:yyyy-MM-dd},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00}\r\n",
+                                k, rx, tx, rx + tx, rx / 1048576.0, tx / 1048576.0, (rx + tx) / 1048576.0);
+                        }
+                        WriteCsvAtomic(FilePath, sb.ToString());
+                        dirty = false;
                     }
-                    string tmp = FilePath + ".tmp";
-                    File.WriteAllText(tmp, sb.ToString(), Encoding.UTF8);
-                    if (File.Exists(FilePath)) File.Delete(FilePath);   // fails (and retries next minute) if Excel has it open
-                    File.Move(tmp, FilePath);
-                    dirty = false;
+                    catch { }
                 }
-                catch { }
+                if (profileDirty)
+                {
+                    try
+                    {
+                        List<string> pkeys = new List<string>(profileDays.Keys);
+                        pkeys.Sort(StringComparer.Ordinal);
+                        StringBuilder sb = new StringBuilder("Date,Profile,Downloaded bytes,Uploaded bytes,Total MB\r\n");
+                        foreach (string pk in pkeys)
+                        {
+                            int sep = pk.IndexOf('|');
+                            if (sep <= 0) continue;
+                            long[] v = profileDays[pk];
+                            sb.AppendFormat(CultureInfo.InvariantCulture, "{0},{1},{2},{3},{4:0.00}\r\n",
+                                pk.Substring(0, sep), pk.Substring(sep + 1), v[0], v[1], (v[0] + v[1]) / 1048576.0);
+                        }
+                        WriteCsvAtomic(ProfileFilePath, sb.ToString());
+                        profileDirty = false;
+                    }
+                    catch { }
+                }
             }
         }
 
@@ -82,6 +149,69 @@ namespace NetSpeedBoss
                 if (!days.TryGetValue(d, out v)) { v = new long[2]; days[d] = v; }
                 v[0] += rx; v[1] += tx;
                 dirty = true;
+            }
+        }
+
+        public void AddProfileUsage(string profile, long rx, long tx)
+        {
+            if ((rx <= 0 && tx <= 0) || string.IsNullOrEmpty(profile)) return;
+            string clean = profile.Replace(',', ' ').Replace('|', ' ').Trim();
+            if (clean.Length == 0) return;
+            lock (gate)
+            {
+                string key = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + "|" + clean;
+                long[] v;
+                if (!profileDays.TryGetValue(key, out v)) { v = new long[2]; profileDays[key] = v; }
+                v[0] += rx; v[1] += tx;
+                profileDirty = true;
+            }
+        }
+
+        public long[] ProfileRange(string profile, DateTime fromInclusive, DateTime toInclusive)
+        {
+            long[] r = new long[2];
+            if (string.IsNullOrEmpty(profile)) return r;
+            string clean = profile.Replace(',', ' ').Replace('|', ' ').Trim();
+            lock (gate)
+            {
+                foreach (KeyValuePair<string, long[]> kv in profileDays)
+                {
+                    int sep = kv.Key.IndexOf('|');
+                    if (sep <= 0) continue;
+                    if (!string.Equals(kv.Key.Substring(sep + 1), clean, StringComparison.OrdinalIgnoreCase)) continue;
+                    DateTime d;
+                    if (DateTime.TryParseExact(kv.Key.Substring(0, sep), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out d)
+                        && d >= fromInclusive.Date && d <= toInclusive.Date)
+                    {
+                        r[0] += kv.Value[0]; r[1] += kv.Value[1];
+                    }
+                }
+            }
+            return r;
+        }
+
+        public double GetProfileCapGB(string profile)
+        {
+            if (string.IsNullOrEmpty(profile)) return 0;
+            lock (gate) { double v; return profileCapsGB.TryGetValue(profile, out v) ? v : 0; }
+        }
+
+        public void SetProfileCapGB(string profile, double gb)
+        {
+            if (string.IsNullOrEmpty(profile)) return;
+            lock (gate)
+            {
+                if (gb > 0) profileCapsGB[profile] = gb;
+                else profileCapsGB.Remove(profile);
+                try
+                {
+                    Directory.CreateDirectory(Settings.Dir);
+                    StringBuilder sb = new StringBuilder();
+                    foreach (KeyValuePair<string, double> kv in profileCapsGB)
+                        sb.Append(kv.Key).Append('=').Append(kv.Value.ToString(CultureInfo.InvariantCulture)).AppendLine();
+                    File.WriteAllText(ProfileCapsPath, sb.ToString());
+                }
+                catch { }
             }
         }
 

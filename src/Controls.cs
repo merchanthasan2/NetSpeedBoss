@@ -402,6 +402,16 @@ namespace NetSpeedBoss
             DrawSeries(g, plot, App.HistRx, n, max, s.DownColor);
             DrawSeries(g, plot, App.HistTx, n, max, s.UpColor);
             foreach (KeyValuePair<TrayApp.GraphApp, double[]> kv in apps) DrawLine(g, plot, kv.Value, n, max, kv.Key.Color);
+            float spikeStep = plot.Width / (float)(n - 1);
+            using (SolidBrush sb = new SolidBrush(Color.FromArgb(220, 239, 68, 68)))
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    if (!App.HistFlag(n - 1 - i)) continue;
+                    float sx = plot.Left + i * spikeStep;
+                    g.FillEllipse(sb, sx - 2.5f, plot.Top + 1f, 5f, 5f);
+                }
+            }
             g.SmoothingMode = SmoothingMode.None;
 
             // legend

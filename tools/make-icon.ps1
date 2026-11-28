@@ -108,14 +108,63 @@ function New-IconBitmap([int]$size) {
     return $out
 }
 
+function ConvertTo-IcoDib([System.Drawing.Bitmap]$bmp) {
+    $w = $bmp.Width; $h = $bmp.Height
+    $ms = New-Object System.IO.MemoryStream
+    $bw = New-Object System.IO.BinaryWriter $ms
+
+    $andStride = [int]([Math]::Floor(($w + 31) / 32) * 4)
+    $xorSize = $w * $h * 4
+    $andSize = $andStride * $h
+
+    # BITMAPINFOHEADER (height is doubled to include AND mask)
+    $bw.Write([UInt32]40)
+    $bw.Write([Int32]$w)
+    $bw.Write([Int32]($h * 2))
+    $bw.Write([UInt16]1)
+    $bw.Write([UInt16]32)
+    $bw.Write([UInt32]0)
+    $bw.Write([UInt32]($xorSize + $andSize))
+    $bw.Write([Int32]0); $bw.Write([Int32]0); $bw.Write([UInt32]0); $bw.Write([UInt32]0)
+
+    $rect = New-Object System.Drawing.Rectangle 0, 0, $w, $h
+    $bd = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $pixels = New-Object byte[] ($bd.Stride * $h)
+    [System.Runtime.InteropServices.Marshal]::Copy($bd.Scan0, $pixels, 0, $pixels.Length)
+    $bmp.UnlockBits($bd)
+
+    # Bottom-up BGRA pixels
+    for ($y = $h - 1; $y -ge 0; $y--) {
+        $bw.Write($pixels, $y * $bd.Stride, $w * 4)
+    }
+    # Bottom-up 1bpp AND mask (bit=1 where alpha==0)
+    $andRow = New-Object byte[] $andStride
+    for ($y = $h - 1; $y -ge 0; $y--) {
+        [Array]::Clear($andRow, 0, $andStride)
+        $rowOff = $y * $bd.Stride
+        for ($x = 0; $x -lt $w; $x++) {
+            if ($pixels[$rowOff + $x * 4 + 3] -eq 0) {
+                $andRow[[int]([Math]::Floor($x / 8))] = $andRow[[int]([Math]::Floor($x / 8))] -bor (0x80 -shr ($x % 8))
+            }
+        }
+        $bw.Write($andRow)
+    }
+    $bw.Flush()
+    return ,([byte[]]$ms.ToArray())
+}
+
 $sizes = 16, 20, 24, 32, 40, 48, 64, 128, 256
-$pngs = @()
+$frames = @()
 foreach ($s in $sizes) {
     $bmp = New-IconBitmap $s
-    $ms = New-Object System.IO.MemoryStream
-    $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-    $pngs += , ($ms.ToArray())
-    if ($s -eq 256) { $bmp.Save((Join-Path $root 'docs\images\icon.png'), [System.Drawing.Imaging.ImageFormat]::Png) }
+    if ($s -ge 256) {
+        $ms = New-Object System.IO.MemoryStream
+        $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $frames += , ($ms.ToArray())
+        $bmp.Save((Join-Path $root 'docs\images\icon.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+    } else {
+        $frames += , (ConvertTo-IcoDib $bmp)
+    }
     $bmp.Dispose()
 }
 $big = New-IconBitmap 512; $big.Save((Join-Path $root 'docs\images\icon-512.png'), [System.Drawing.Imaging.ImageFormat]::Png); $big.Dispose()
@@ -129,9 +178,9 @@ for ($i = 0; $i -lt $sizes.Count; $i++) {
     $s = $sizes[$i]; $dim = if ($s -ge 256) { 0 } else { $s }
     $bw.Write([byte]$dim); $bw.Write([byte]$dim); $bw.Write([byte]0); $bw.Write([byte]0)
     $bw.Write([UInt16]1); $bw.Write([UInt16]32)
-    $bw.Write([UInt32]$pngs[$i].Length); $bw.Write([UInt32]$offset)
-    $offset += $pngs[$i].Length
+    $bw.Write([UInt32]$frames[$i].Length); $bw.Write([UInt32]$offset)
+    $offset += $frames[$i].Length
 }
-foreach ($p in $pngs) { $bw.Write($p) }
+foreach ($p in $frames) { $bw.Write([byte[]]$p) }
 $bw.Close()
 Write-Host "Wrote $ico, docs\images\icon.png, docs\images\icon-512.png"

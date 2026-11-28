@@ -25,6 +25,16 @@ namespace NetSpeedBoss
         public List<EpView> Eps = new List<EpView>();
     }
 
+    public class ListeningPortInfo
+    {
+        public string Proto = "TCP";
+        public string LocalAddress = "";
+        public int Port;
+        public int Pid;
+        public string ProcessName = "";
+        public string Path = "";
+    }
+
     /// <summary>
     /// Per-application network activity.
     ///  - Elevated: real-time ETW session on Microsoft-Windows-Kernel-Network (TCP + UDP, IPv4 + IPv6)
@@ -436,6 +446,130 @@ namespace NetSpeedBoss
                     p.TotIn = p.TotOut = 0;
                     foreach (Ep e in p.Eps.Values) e.TotIn = e.TotOut = 0;
                 }
+        }
+
+        public List<ListeningPortInfo> ReadListeners()
+        {
+            List<ListeningPortInfo> list = new List<ListeningPortInfo>();
+            HashSet<string> seen = new HashSet<string>();
+            ReadTcpListeners(Native.AF_INET, list, seen);
+            ReadTcpListeners(Native.AF_INET6, list, seen);
+            ReadUdpListeners(Native.AF_INET, list, seen);
+            ReadUdpListeners(Native.AF_INET6, list, seen);
+            Dictionary<int, string[]> pidCache = new Dictionary<int, string[]>();
+            foreach (ListeningPortInfo item in list)
+            {
+                string[] meta;
+                if (!pidCache.TryGetValue(item.Pid, out meta))
+                {
+                    string nm = "", pth = "";
+                    try { using (Process pr = Process.GetProcessById(item.Pid)) nm = pr.ProcessName + ".exe"; } catch { nm = "PID " + item.Pid; }
+                    pth = Native.GetProcessPath(item.Pid) ?? "";
+                    meta = new string[] { nm, pth };
+                    pidCache[item.Pid] = meta;
+                }
+                item.ProcessName = meta[0];
+                item.Path = meta[1];
+            }
+            list.Sort(delegate(ListeningPortInfo a, ListeningPortInfo b)
+            {
+                int r = a.Port.CompareTo(b.Port);
+                return r != 0 ? r : string.Compare(a.Proto, b.Proto, StringComparison.Ordinal);
+            });
+            return list;
+        }
+
+        static void ReadTcpListeners(int af, List<ListeningPortInfo> list, HashSet<string> seen)
+        {
+            int size = 0;
+            Native.GetExtendedTcpTable(IntPtr.Zero, ref size, false, af, Native.TCP_TABLE_OWNER_PID_ALL, 0);
+            for (int attempt = 0; attempt < 3 && size > 0; attempt++)
+            {
+                IntPtr buf = Marshal.AllocHGlobal(size);
+                try
+                {
+                    int r = Native.GetExtendedTcpTable(buf, ref size, false, af, Native.TCP_TABLE_OWNER_PID_ALL, 0);
+                    if (r == 122) continue;
+                    if (r != 0) return;
+                    int n = Marshal.ReadInt32(buf);
+                    int rowSize = af == Native.AF_INET ? 24 : 56;
+                    for (int i = 0; i < n; i++)
+                    {
+                        long off = buf.ToInt64() + 4 + (long)i * rowSize;
+                        IntPtr row = new IntPtr(off);
+                        int state, pid, lport; IPAddress local;
+                        if (af == Native.AF_INET)
+                        {
+                            state = Marshal.ReadInt32(row, 0);
+                            local = new IPAddress((long)(uint)Marshal.ReadInt32(row, 4));
+                            lport = Swap16(Marshal.ReadInt32(row, 8) & 0xFFFF);
+                            pid = Marshal.ReadInt32(row, 20);
+                        }
+                        else
+                        {
+                            byte[] b = new byte[16]; Marshal.Copy(new IntPtr(off), b, 0, 16); local = new IPAddress(b);
+                            lport = Swap16(Marshal.ReadInt32(row, 20) & 0xFFFF);
+                            state = Marshal.ReadInt32(row, 48);
+                            pid = Marshal.ReadInt32(row, 52);
+                        }
+                        if (state != 2 || pid <= 0) continue;
+                        AddListener("TCP", local, lport, pid, list, seen);
+                    }
+                    return;
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+        }
+
+        static void ReadUdpListeners(int af, List<ListeningPortInfo> list, HashSet<string> seen)
+        {
+            int size = 0;
+            Native.GetExtendedUdpTable(IntPtr.Zero, ref size, false, af, Native.UDP_TABLE_OWNER_PID, 0);
+            for (int attempt = 0; attempt < 3 && size > 0; attempt++)
+            {
+                IntPtr buf = Marshal.AllocHGlobal(size);
+                try
+                {
+                    int r = Native.GetExtendedUdpTable(buf, ref size, false, af, Native.UDP_TABLE_OWNER_PID, 0);
+                    if (r == 122) continue;
+                    if (r != 0) return;
+                    int n = Marshal.ReadInt32(buf);
+                    int rowSize = af == Native.AF_INET ? 12 : 28;
+                    for (int i = 0; i < n; i++)
+                    {
+                        long off = buf.ToInt64() + 4 + (long)i * rowSize;
+                        IntPtr row = new IntPtr(off);
+                        int pid, lport; IPAddress local;
+                        if (af == Native.AF_INET)
+                        {
+                            local = new IPAddress((long)(uint)Marshal.ReadInt32(row, 0));
+                            lport = Swap16(Marshal.ReadInt32(row, 4) & 0xFFFF);
+                            pid = Marshal.ReadInt32(row, 8);
+                        }
+                        else
+                        {
+                            byte[] b = new byte[16]; Marshal.Copy(new IntPtr(off), b, 0, 16); local = new IPAddress(b);
+                            lport = Swap16(Marshal.ReadInt32(row, 20) & 0xFFFF);
+                            pid = Marshal.ReadInt32(row, 24);
+                        }
+                        if (pid <= 0) continue;
+                        AddListener("UDP", local, lport, pid, list, seen);
+                    }
+                    return;
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+        }
+
+        static void AddListener(string proto, IPAddress local, int port, int pid, List<ListeningPortInfo> list, HashSet<string> seen)
+        {
+            local = Norm(local);
+            string addr = local.ToString();
+            string key = proto + "|" + addr + "|" + port + "|" + pid;
+            if (!seen.Add(key)) return;
+            ListeningPortInfo info = new ListeningPortInfo();
+            info.Proto = proto; info.LocalAddress = addr; info.Port = port; info.Pid = pid;
+            list.Add(info);
         }
     }
 }

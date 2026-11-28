@@ -27,11 +27,12 @@ namespace NetSpeedBoss
         }
 
         // ----- general -----
-        public SpeedUnit Unit = SpeedUnit.Bytes;
+        public SpeedUnit Unit = SpeedUnit.Bits;
         public int IntervalMs = 1000;
         public string Adapter = "auto";          // "auto" | "all" | adapter Id
         // ----- taskbar meter -----
         public bool ShowOnTaskbar = true;
+        public bool TaskbarAutoPlace = true;     // auto-fit into empty taskbar space (near weather bar)
         public int TaskbarOffset = 6;            // px between the meter and the notification area
         public float TaskbarFontSize = 9f;
         public string TaskbarFontName = "Segoe UI";
@@ -84,6 +85,18 @@ namespace NetSpeedBoss
         public Color GameHudCpuColor = Color.FromArgb(96, 165, 250);
         public Color GameHudMemColor = Color.FromArgb(192, 132, 252);
         public Color GameHudNetColor = Color.FromArgb(251, 191, 36);
+        public bool GameHudStrip = false;
+        public bool GameHudLogSessions = true;
+        // ----- v1.4 hotkeys, alerts & profiles -----
+        public bool GlobalHotkeysEnabled = true;
+        public bool AlertOnWanDrop = true;
+        public double HogAlertMBps = 0;         // 0 = off; alert if a non-game app exceeds MB/s
+        public bool HogAlertDuringGame = true;
+        public string ProfilePreset = "Standard"; // Standard | Gaming | Travel
+        public bool TrackOutages = true;
+        public bool WatchNewLanDevices = false;
+        public bool AlertNewNetworkApps = false;
+        public double PlanDownMbps = 0, PlanUpMbps = 0;
 
         public static Settings Load()
         {

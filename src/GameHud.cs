@@ -15,22 +15,11 @@ namespace NetSpeedBoss
     /// </summary>
     public class GameHud : Form
     {
-        [StructLayout(LayoutKind.Sequential)] struct PT { public int X, Y; public PT(int x, int y) { X = x; Y = y; } }
-        [StructLayout(LayoutKind.Sequential)] struct SZ { public int W, H; public SZ(int w, int h) { W = w; H = h; } }
-        [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte Op, Flags, Alpha, Format; }
-        [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref PT pos, ref SZ size, IntPtr src, ref PT srcPos, int key, ref BLEND blend, int flags);
-        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
-        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
-        [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
-        [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
-        [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
-        [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
-
         readonly TrayApp app;
         readonly Font fHead = new Font("Segoe UI Semibold", 9.5f);
         readonly Font fMono = new Font("Consolas", 9.5f, FontStyle.Bold);
         readonly Font fSmall = new Font("Consolas", 8f);
-        public const int HudW = 376, Pad = 12;
+        public const int HudW = 376, StripW = 740, StripH = 34, Pad = 12;
 
         static readonly Color RagGreen = Color.FromArgb(74, 222, 128);
         static readonly Color RagAmber = Color.FromArgb(251, 191, 36);
@@ -43,10 +32,10 @@ namespace NetSpeedBoss
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
             Text = "NetSpeed Boss Gaming HUD";
-            ClientSize = new Size(HudW, ComputeHeight(app.S));
+            ClientSize = ComputeSize(app.S);
 
             MouseDown += OnMouseDownDrag;
-            MouseDoubleClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) app.ShowDashboard(4); };
+            MouseDoubleClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) app.ShowDashboard(5); };
             LocationChanged += delegate
             {
                 if (!Visible) return;
@@ -57,8 +46,14 @@ namespace NetSpeedBoss
             ApplySettings();
         }
 
+        public static Size ComputeSize(Settings s)
+        {
+            return s.GameHudStrip ? new Size(StripW, StripH) : new Size(HudW, ComputeHeight(s));
+        }
+
         public static int ComputeHeight(Settings s)
         {
+            if (s.GameHudStrip) return StripH;
             int rows = 0;
             if (s.GameHudShowFps) rows++;
             if (s.GameHudShowGpu) rows++;
@@ -92,10 +87,10 @@ namespace NetSpeedBoss
             Settings s = app.S;
             TopMost = true;
             ContextMenuStrip = app.Menu;
-            int h = ComputeHeight(s);
-            if (ClientSize.Height != h) ClientSize = new Size(HudW, h);
+            Size sz = ComputeSize(s);
+            if (ClientSize != sz) ClientSize = sz;
 
-            if (s.GameHudX == int.MinValue || !OnAnyScreen(new Rectangle(s.GameHudX, s.GameHudY, HudW, h)))
+            if (s.GameHudX == int.MinValue || !OnAnyScreen(new Rectangle(s.GameHudX, s.GameHudY, sz.Width, sz.Height)))
                 PlaceInCorner(s.GameHudCorner);
             else
                 Location = new Point(s.GameHudX, s.GameHudY);
@@ -105,17 +100,25 @@ namespace NetSpeedBoss
         public void PlaceInCorner(int corner)
         {
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
-            int h = ComputeHeight(app.S);
+            Size sz = ComputeSize(app.S);
             const int m = 16;
-            int x = wa.Left + m, y = wa.Top + m;
+            if (app.S.GameHudStrip)
+            {
+                int x = wa.Left + Math.Max(m, (wa.Width - sz.Width) / 2);
+                int y = (corner >= 2) ? wa.Bottom - sz.Height - m : wa.Top + m;
+                app.S.GameHudX = x; app.S.GameHudY = y;
+                Location = new Point(x, y);
+                return;
+            }
+            int cx = wa.Left + m, cy = wa.Top + m;
             switch (corner)
             {
-                case 1: x = wa.Right - HudW - m; y = wa.Top + m; break;
-                case 2: x = wa.Left + m; y = wa.Bottom - h - m; break;
-                case 3: x = wa.Right - HudW - m; y = wa.Bottom - h - m; break;
+                case 1: cx = wa.Right - sz.Width - m; cy = wa.Top + m; break;
+                case 2: cx = wa.Left + m; cy = wa.Bottom - sz.Height - m; break;
+                case 3: cx = wa.Right - sz.Width - m; cy = wa.Bottom - sz.Height - m; break;
             }
-            app.S.GameHudX = x; app.S.GameHudY = y;
-            Location = new Point(x, y);
+            app.S.GameHudX = cx; app.S.GameHudY = cy;
+            Location = new Point(cx, cy);
         }
 
         static bool OnAnyScreen(Rectangle r)
@@ -127,8 +130,8 @@ namespace NetSpeedBoss
 
         public void RefreshOverlay()
         {
-            int h = ComputeHeight(app.S);
-            if (ClientSize.Height != h) ClientSize = new Size(HudW, h);
+            Size sz = ComputeSize(app.S);
+            if (ClientSize != sz) ClientSize = sz;
             if (Visible)
             {
                 RenderLayered();
@@ -140,33 +143,16 @@ namespace NetSpeedBoss
         void RenderLayered()
         {
             if (!IsHandleCreated) return;
-            int w = HudW, h = ComputeHeight(app.S);
+            Size sz = ComputeSize(app.S);
             int bgAlpha = Math.Max(1, Math.Min(255, (int)Math.Round(app.S.GameHudOpacity * 2.55)));
-            using (Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+            using (Bitmap bmp = new Bitmap(sz.Width, sz.Height, PixelFormat.Format32bppArgb))
             {
                 using (Graphics g = Graphics.FromImage(bmp))
                 {
                     g.Clear(Color.Transparent);
-                    PaintHud(g, new Rectangle(0, 0, w, h), app, app.Game, fHead, fMono, fSmall, false, bgAlpha);
+                    PaintHud(g, new Rectangle(0, 0, sz.Width, sz.Height), app, app.Game, fHead, fMono, fSmall, false, bgAlpha);
                 }
-                IntPtr screen = GetDC(IntPtr.Zero);
-                IntPtr mem = CreateCompatibleDC(screen);
-                IntPtr hbmp = bmp.GetHbitmap(Color.FromArgb(0));
-                IntPtr old = SelectObject(mem, hbmp);
-                try
-                {
-                    PT pos = new PT(Left, Top), src = new PT(0, 0);
-                    SZ size = new SZ(w, h);
-                    BLEND bl = new BLEND(); bl.Op = 0; bl.Alpha = 255; bl.Format = 1; // AC_SRC_OVER, AC_SRC_ALPHA
-                    UpdateLayeredWindow(Handle, screen, ref pos, ref size, mem, ref src, 0, ref bl, 2 /*ULW_ALPHA*/);
-                }
-                finally
-                {
-                    SelectObject(mem, old);
-                    DeleteObject(hbmp);
-                    DeleteDC(mem);
-                    ReleaseDC(IntPtr.Zero, screen);
-                }
+                Native.PresentLayered(Handle, Left, Top, bmp);
             }
         }
 
@@ -245,6 +231,7 @@ namespace NetSpeedBoss
                 : (t.GameActive && t.GameName.Length > 0 ? t.GameName : (t.GpuName.Length > 0 ? t.GpuName : "Gaming HUD"));
             int scrW = t.ScreenW, scrH = t.ScreenH, hz = t.RefreshHz;
             double fps = sample ? 78.4 : t.Fps, fpsMin = sample ? 54 : t.FpsMin, fpsMax = sample ? 96 : t.FpsMax, fms = sample ? 12.8 : t.FrameMs;
+            double fps1Low = sample ? 61.2 : t.Fps1PctLow;
             double gpuU = sample ? 94 : t.GpuUtil, gpuT = sample ? 74 : t.GpuTempC, gpuF = sample ? 66 : t.GpuFanPct, gpuP = sample ? 182 : t.GpuPowerW;
             int gpuClk = sample ? 2685 : t.GpuClockMhz;
             long vUsed = sample ? 7420 : t.VramUsedMB, vTot = sample ? 12282 : t.VramTotalMB;
@@ -273,6 +260,14 @@ namespace NetSpeedBoss
                 g.DrawPath(bp, p);
             }
 
+            if (s.GameHudStrip)
+            {
+                PaintStripHud(g, rc, s, app.IsAdmin, fMono, fSmall, fg, muted,
+                    fps, fps1Low, gpuU, gpuT, vUsed, vTot, cpuU, cpuT, memU, netRx, netTx, pingMs);
+                g.SmoothingMode = SmoothingMode.None;
+                return;
+            }
+
             int x = rc.X + Pad, w = rc.Width - Pad * 2, y = rc.Y + 8;
             string disp = "[" + scrW + "x" + scrH + " " + hz + "Hz]";
             int dispW = (int)Math.Ceiling(g.MeasureString(disp, fSmall).Width) + 8;
@@ -291,11 +286,12 @@ namespace NetSpeedBoss
                 Color fpsCol = hasFps ? RagHigherBetter(fps, s.GameHudFpsGreen, s.GameHudFpsAmber, fg, s.GameHudRag) : muted;
                 if (hasFps && s.GameHudRag) DrawRagDot(g, x + lblW, y + 6, fpsCol);
                 int valOff = (hasFps && s.GameHudRag) ? lblW + 12 : lblW;
-                string fpsTxt = hasFps ? string.Format("{0:0.0}  [{1:0}  {2:0}]", fps, fpsMin, fpsMax)
+                string fpsTxt = hasFps
+                    ? string.Format("{0:0.0}  (1% {1:0})  [{2:0} {3:0}]", fps, fps1Low > 0 ? fps1Low : fpsMin, fpsMin, fpsMax)
                     : (app.IsAdmin ? "-- (idle)" : "-- (Admin)");
                 string fmsTxt = fms > 0.1 ? fms.ToString("0.0") + " ms" : "";
-                DrawTxt(g, fpsTxt, fMono, new Rectangle(x + valOff, y, w - valOff - 68, rowH), fpsCol, StringAlignment.Near);
-                if (fmsTxt.Length > 0) DrawTxt(g, fmsTxt, fMono, new Rectangle(x + w - 68, y, 68, rowH), fpsCol, StringAlignment.Far);
+                DrawTxt(g, fpsTxt, fMono, new Rectangle(x + valOff, y, w - valOff - 64, rowH), fpsCol, StringAlignment.Near);
+                if (fmsTxt.Length > 0) DrawTxt(g, fmsTxt, fMono, new Rectangle(x + w - 64, y, 64, rowH), fpsCol, StringAlignment.Far);
                 y += rowH;
             }
 
@@ -406,6 +402,79 @@ namespace NetSpeedBoss
             g.SmoothingMode = SmoothingMode.None;
         }
 
+        struct StripSeg
+        {
+            public string Label, Value;
+            public Color LabelColor, ValueColor;
+            public bool Dot;
+            public StripSeg(string l, string v, Color lc, Color vc, bool dot)
+            {
+                Label = l; Value = v; LabelColor = lc; ValueColor = vc; Dot = dot;
+            }
+        }
+
+        static void PaintStripHud(Graphics g, Rectangle rc, Settings s, bool isAdmin, Font fMono, Font fSmall, Color fg, Color muted,
+            double fps, double fps1Low, double gpuU, double gpuT, long vUsed, long vTot, double cpuU, double cpuT, double memU, double netRx, double netTx, long pingMs)
+        {
+            int x = rc.X + 10, y = rc.Y, h = rc.Height;
+            System.Collections.Generic.List<StripSeg> segs = new System.Collections.Generic.List<StripSeg>();
+            if (s.GameHudShowFps)
+            {
+                bool hasFps = fps > 0.5;
+                Color c = hasFps ? RagHigherBetter(fps, s.GameHudFpsGreen, s.GameHudFpsAmber, fg, s.GameHudRag) : muted;
+                string v = hasFps ? string.Format("{0:0} (1%:{1:0})", fps, fps1Low > 0 ? fps1Low : fps) : (isAdmin ? "--" : "Admin");
+                segs.Add(new StripSeg("FPS", v, s.GameHudFpsColor, c, hasFps && s.GameHudRag));
+            }
+            if (s.GameHudShowGpu)
+            {
+                Color c = gpuT >= 0 ? RagLowerBetter(gpuT, s.GameHudTempGreen, s.GameHudTempAmber, s.GameHudGpuColor, s.GameHudRag)
+                    : (gpuU >= 0 ? RagLoad(gpuU, s.GameHudLoadAmber, s.GameHudLoadRed, s.GameHudGpuColor, s.GameHudRag) : muted);
+                string v = (gpuU >= 0 ? gpuU.ToString("0") + "%" : "--") + (gpuT >= 0 ? " " + gpuT.ToString("0") + "°C" : "");
+                segs.Add(new StripSeg("GPU", v, s.GameHudGpuColor, c, s.GameHudRag && (gpuT >= 0 || gpuU >= 0)));
+            }
+            if (s.GameHudShowMem)
+            {
+                double vp = (vUsed >= 0 && vTot > 0) ? 100.0 * vUsed / vTot : -1;
+                Color vc = vp >= 0 ? RagLoad(vp, s.GameHudLoadAmber, s.GameHudLoadRed, fg, s.GameHudRag) : muted;
+                string vv = (vUsed >= 0 && vTot > 0) ? string.Format("{0:0.0}/{1:0.0}G", vUsed / 1024.0, vTot / 1024.0) : "--";
+                segs.Add(new StripSeg("VRAM", vv, s.GameHudGpuColor, vc, vp >= 0 && s.GameHudRag));
+            }
+            if (s.GameHudShowCpu)
+            {
+                Color c = RagLoad(cpuU, s.GameHudLoadAmber, s.GameHudLoadRed, fg, s.GameHudRag);
+                string v = cpuU.ToString("0") + "%" + (cpuT > 0 ? " " + cpuT.ToString("0") + "°C" : "");
+                segs.Add(new StripSeg("CPU", v, s.GameHudCpuColor, c, s.GameHudRag));
+            }
+            if (s.GameHudShowMem)
+            {
+                Color c = RagLoad(memU, s.GameHudLoadAmber, s.GameHudLoadRed, fg, s.GameHudRag);
+                segs.Add(new StripSeg("RAM", memU.ToString("0") + "%", s.GameHudMemColor, c, false));
+            }
+            if (s.GameHudShowNet)
+            {
+                Color c = pingMs < 0 ? muted : RagLowerBetter(pingMs, s.GameHudPingGreen, s.GameHudPingAmber, s.GameHudNetColor, s.GameHudRag);
+                string p = pingMs >= 0 ? pingMs + "ms" : "--";
+                string v = p + "  ↓" + Fmt.Speed(netRx, s.Unit);
+                segs.Add(new StripSeg("NET", v, s.GameHudNetColor, c, pingMs >= 0 && s.GameHudRag));
+            }
+            if (segs.Count == 0) return;
+            int slotW = (rc.Width - 20) / segs.Count;
+            using (Pen sep = new Pen(Color.FromArgb(120, s.GameHudBorderColor)))
+            {
+                for (int i = 0; i < segs.Count; i++)
+                {
+                    int sx = x + i * slotW;
+                    if (i > 0) g.DrawLine(sep, sx - 4, y + 7, sx - 4, y + h - 7);
+                    StripSeg seg = segs[i];
+                    int lw = (int)Math.Ceiling(g.MeasureString(seg.Label, fSmall).Width) + 4;
+                    DrawTxt(g, seg.Label, fSmall, new Rectangle(sx, y, lw, h), seg.LabelColor, StringAlignment.Near);
+                    int vx = sx + lw;
+                    if (seg.Dot) { DrawRagDot(g, vx, y + (h - 7) / 2, seg.ValueColor); vx += 10; }
+                    DrawTxt(g, seg.Value, fMono, new Rectangle(vx, y, Math.Max(20, sx + slotW - vx - 6), h), seg.ValueColor, StringAlignment.Near);
+                }
+            }
+        }
+
         static void DrawRagDot(Graphics g, int x, int y, Color c)
         {
             using (SolidBrush b = new SolidBrush(Color.FromArgb(255, c))) g.FillEllipse(b, x, y, 7, 7);
@@ -478,8 +547,9 @@ namespace NetSpeedBoss
                             g.FillRectangle(cb, x, y, 16, 16);
 
             if (App == null) return;
-            int hudH = Math.Min(Height - 12, GameHud.ComputeHeight(App.S));
-            int hudW = Math.Min(Width - 12, GameHud.HudW);
+            Size hudSz = GameHud.ComputeSize(App.S);
+            int hudH = Math.Min(Height - 12, hudSz.Height);
+            int hudW = Math.Min(Width - 12, hudSz.Width);
             Rectangle rc = new Rectangle((Width - hudW) / 2, Math.Max(6, (Height - hudH) / 2), hudW, hudH);
             int alpha = Math.Max(1, Math.Min(255, (int)Math.Round(App.S.GameHudOpacity * 2.55)));
             GameHud.PaintHud(g, rc, App, App.Game, fHead, fMono, fSmall, true, alpha);

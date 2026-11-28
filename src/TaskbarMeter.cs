@@ -4,6 +4,8 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows.Automation;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -15,16 +17,6 @@ namespace NetSpeedBoss
     /// </summary>
     public class TaskbarMeter : Form
     {
-        [StructLayout(LayoutKind.Sequential)] struct PT { public int X, Y; public PT(int x, int y) { X = x; Y = y; } }
-        [StructLayout(LayoutKind.Sequential)] struct SZ { public int W, H; public SZ(int w, int h) { W = w; H = h; } }
-        [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte Op, Flags, Alpha, Format; }
-        [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref PT pos, ref SZ size, IntPtr src, ref PT srcPos, int key, ref BLEND blend, int flags);
-        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
-        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
-        [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
-        [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
-        [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
-        [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
         delegate void WinEventProc(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
         [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventProc proc, uint pid, uint tid, uint flags);
         [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr hook);
@@ -34,12 +26,16 @@ namespace NetSpeedBoss
         readonly ToolTip tip = new ToolTip();
         Font font;
         double rx, tx;
-        bool hover, lightTheme = true, autoHidden, dragging;
+        bool hover, lightTheme = true, centeredWin11, widgetsEnabled = true, autoHidden, dragging;
         DateTime themeChecked = DateTime.MinValue;
+        DateTime layoutCheckedUtc = DateTime.MinValue;
+        bool layoutBusy, hasUiaLayout;
+        int uiaWeatherRight, uiaIconsLeft, uiaIconsRight;
         int dragStartX, dragStartY, dragStartOffset, anchorEdge;
         bool vertical;
         IntPtr hook;
         readonly WinEventProc hookProc;
+        readonly EventHandler displayChanged;
 
         public TaskbarMeter(TrayApp app)
         {
@@ -54,6 +50,8 @@ namespace NetSpeedBoss
             // whenever another window (e.g. the taskbar itself) comes to the front, put us back on top
             hookProc = delegate { if (Visible) KeepOnTop(); };
             hook = SetWinEventHook(3 /*EVENT_SYSTEM_FOREGROUND*/, 3, IntPtr.Zero, hookProc, 0, 0, 0 /*OUTOFCONTEXT*/);
+            displayChanged = delegate { themeChecked = DateTime.MinValue; layoutCheckedUtc = DateTime.MinValue; if (Visible) Render(); };
+            SystemEvents.DisplaySettingsChanged += displayChanged;
 
             MouseEnter += delegate
             {
@@ -68,7 +66,13 @@ namespace NetSpeedBoss
             {
                 if (e.Button != MouseButtons.Left || app.S.LockPosition) return;
                 dragging = true; Capture = true;
-                dragStartX = Cursor.Position.X; dragStartY = Cursor.Position.Y; dragStartOffset = app.S.TaskbarOffset;
+                dragStartX = Cursor.Position.X; dragStartY = Cursor.Position.Y;
+                if (app.S.TaskbarAutoPlace && IsHandleCreated)
+                {
+                    app.S.TaskbarAutoPlace = false;
+                    app.S.TaskbarOffset = vertical ? Math.Max(0, anchorEdge - Bottom) : Math.Max(0, anchorEdge - Right);
+                }
+                dragStartOffset = app.S.TaskbarOffset;
             };
             MouseMove += delegate
             {
@@ -77,7 +81,7 @@ namespace NetSpeedBoss
                 app.S.TaskbarOffset = dragStartOffset - d;
                 Render();
             };
-            MouseUp += delegate { if (dragging) { dragging = false; Capture = false; app.S.Save(); } };
+            MouseUp += delegate { if (dragging) { dragging = false; Capture = false; app.Changed(); } };
         }
 
         protected override CreateParams CreateParams
@@ -147,10 +151,39 @@ namespace NetSpeedBoss
             {
                 int w = c.Width, h = bar.Height;
                 anchorEdge = hasNotify && nr.Left > bar.Left ? nr.Left : bar.Right - 320;
-                int right = anchorEdge - app.S.TaskbarOffset;
-                int left = Math.Max(bar.Left, Math.Min(bar.Right - w, right - w));
-                bounds = new Rectangle(left, bar.Top, w, h);
-                app.S.TaskbarOffset = anchorEdge - bounds.Right;
+                ProbeLayoutAsync(tb, bar, anchorEdge);
+
+                int left;
+                if (app.S.TaskbarAutoPlace)
+                {
+                    int weatherEdge = (hasUiaLayout && uiaWeatherRight > bar.Left)
+                        ? uiaWeatherRight + 8
+                        : bar.Left + ((centeredWin11 && widgetsEnabled) ? 168 : 10);
+                    int iconsStart = (hasUiaLayout && uiaIconsLeft > bar.Left && uiaIconsLeft < anchorEdge)
+                        ? uiaIconsLeft
+                        : bar.Left + (centeredWin11 ? Math.Max(220, bar.Width / 2 - 220) : 480);
+                    int iconsEnd = (hasUiaLayout && uiaIconsRight > bar.Left && uiaIconsRight <= anchorEdge)
+                        ? uiaIconsRight
+                        : bar.Left + (centeredWin11 ? Math.Min(anchorEdge - 20, bar.Width / 2 + 220) : 500);
+
+                    if (centeredWin11 && iconsStart - weatherEdge >= w + 8)
+                        left = weatherEdge;                                  // right beside the weather/widgets bar
+                    else if (anchorEdge - iconsEnd >= w + 12)
+                        left = anchorEdge - w - 8;                           // fallback: open space left of system tray
+                    else if (iconsStart - (bar.Left + 8) >= w + 6)
+                        left = bar.Left + 8;                                 // fallback: left edge before icons
+                    else
+                        left = Math.Max(bar.Left + 4, anchorEdge - w - 6);
+                    left = Math.Max(bar.Left, Math.Min(bar.Right - w, left));
+                    bounds = new Rectangle(left, bar.Top, w, h);
+                }
+                else
+                {
+                    int right = anchorEdge - app.S.TaskbarOffset;
+                    left = Math.Max(bar.Left, Math.Min(bar.Right - w, right - w));
+                    bounds = new Rectangle(left, bar.Top, w, h);
+                    app.S.TaskbarOffset = anchorEdge - bounds.Right;
+                }
             }
             else
             {
@@ -164,6 +197,61 @@ namespace NetSpeedBoss
             return true;
         }
 
+        void ProbeLayoutAsync(IntPtr tb, Rectangle bar, int trayLeft)
+        {
+            if (layoutBusy || !app.S.TaskbarAutoPlace || (DateTime.UtcNow - layoutCheckedUtc).TotalSeconds < 3) return;
+            layoutBusy = true;
+            layoutCheckedUtc = DateTime.UtcNow;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    AutomationElement root = AutomationElement.FromHandle(tb);
+                    if (root != null)
+                    {
+                        AutomationElementCollection btns = root.FindAll(TreeScope.Descendants,
+                            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+                        int wRight = bar.Left;
+                        int iLeft = trayLeft;
+                        int iRight = bar.Left;
+                        foreach (AutomationElement el in btns)
+                        {
+                            try
+                            {
+                                System.Windows.Rect r = el.Current.BoundingRectangle;
+                                if (r.IsEmpty || r.Width < 12 || r.Height < 14) continue;
+                                if (r.Right <= bar.Left || r.Left >= trayLeft - 4) continue;
+                                string aid = el.Current.AutomationId ?? "";
+                                string name = el.Current.Name ?? "";
+                                bool isWidget = aid.IndexOf("Widget", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                name.IndexOf("Widget", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                name.IndexOf("Weather", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                ((name.Contains("°") || name.Contains("°C") || name.Contains("°F")) && r.Left < bar.Left + bar.Width / 4.0);
+                                if (isWidget)
+                                {
+                                    if ((int)Math.Ceiling(r.Right) > wRight) wRight = (int)Math.Ceiling(r.Right);
+                                }
+                                else
+                                {
+                                    int rl = (int)Math.Floor(r.Left);
+                                    int rr = (int)Math.Ceiling(r.Right);
+                                    if (rl < iLeft) iLeft = rl;
+                                    if (rr > iRight) iRight = rr;
+                                }
+                            }
+                            catch { }
+                        }
+                        uiaWeatherRight = wRight;
+                        uiaIconsLeft = iLeft;
+                        uiaIconsRight = iRight;
+                        hasUiaLayout = iLeft < trayLeft || wRight > bar.Left;
+                    }
+                }
+                catch { }
+                finally { layoutBusy = false; }
+            });
+        }
+
         void CheckTheme()
         {
             if ((DateTime.UtcNow - themeChecked).TotalSeconds < 10) return;
@@ -174,6 +262,13 @@ namespace NetSpeedBoss
                 {
                     object v = k == null ? null : k.GetValue("SystemUsesLightTheme");
                     lightTheme = v is int && (int)v == 1;
+                }
+                using (RegistryKey adv = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                {
+                    object al = adv == null ? null : adv.GetValue("TaskbarAl");
+                    centeredWin11 = !(al is int) || (int)al == 1;
+                    object da = adv == null ? null : adv.GetValue("TaskbarDa");
+                    widgetsEnabled = !(da is int) || (int)da != 0;
                 }
             }
             catch { }
@@ -229,30 +324,14 @@ namespace NetSpeedBoss
                     }
                 }
 
-                IntPtr screen = GetDC(IntPtr.Zero);
-                IntPtr mem = CreateCompatibleDC(screen);
-                IntPtr hbmp = bmp.GetHbitmap(Color.FromArgb(0));
-                IntPtr old = SelectObject(mem, hbmp);
-                try
-                {
-                    PT pos = new PT(b.X, b.Y), src = new PT(0, 0);
-                    SZ size = new SZ(b.Width, b.Height);
-                    BLEND bl = new BLEND(); bl.Op = 0; bl.Alpha = 255; bl.Format = 1; // AC_SRC_OVER, AC_SRC_ALPHA
-                    UpdateLayeredWindow(Handle, screen, ref pos, ref size, mem, ref src, 0, ref bl, 2 /*ULW_ALPHA*/);
-                }
-                finally
-                {
-                    SelectObject(mem, old);
-                    DeleteObject(hbmp);
-                    DeleteDC(mem);
-                    ReleaseDC(IntPtr.Zero, screen);
-                }
+                Native.PresentLayered(Handle, b.X, b.Y, bmp);
             }
         }
 
         protected override void Dispose(bool disposing)
         {
             if (hook != IntPtr.Zero) { UnhookWinEvent(hook); hook = IntPtr.Zero; }
+            if (displayChanged != null) SystemEvents.DisplaySettingsChanged -= displayChanged;
             if (disposing) { if (font != null) font.Dispose(); tip.Dispose(); }
             base.Dispose(disposing);
         }
