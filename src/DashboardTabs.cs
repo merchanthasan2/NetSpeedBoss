@@ -842,7 +842,7 @@ namespace NetSpeedBoss
             grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 144));
             grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 144));
 
-            grid.Controls.Add(StoreCard("Microsoft Store", "Official MSIX package with automatic Store updates.\nStore ID: 9NP6V92XWLSH",
+            grid.Controls.Add(StoreCard("Microsoft Store", "Official NetSpeed Boss MSIX package by Quantum Step.\nAutomatic Microsoft Store updates.",
                 Color.FromArgb(0, 120, 212), "msstore", "Open Store",
                 delegate { OpenStorePage(); }, null), 0, 0);
 
